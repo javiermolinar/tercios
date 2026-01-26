@@ -1,0 +1,25 @@
+{
+  "endpoint": {
+    "address": "localhost:4317",
+    "protocol": "grpc",
+    "insecure": true,
+    "headers": {
+      "Authorization": "Basic ..."
+    }
+  },
+  "concurrency": {
+    "exporters": 4
+  },
+  "requests": {
+    "per_exporter": 100000,
+    "interval": "200ms",
+    "for": "30m"
+  },
+  "generator": {
+    "services": 5,
+    "max_depth": 4,
+    "max_spans": 30,
+    "service_name": "",
+    "span_name": ""
+  }
+}

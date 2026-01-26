@@ -1,0 +1,25 @@
+{
+  "endpoint": {
+    "address": "localhost:4317",
+    "protocol": "grpc",
+    "insecure": true,
+    "headers": {
+      "Authorization": "Basic ..."
+    }
+  },
+  "concurrency": {
+    "exporters": 3
+  },
+  "requests": {
+    "per_exporter": 10,
+    "interval": "500ms",
+    "for": "0s"
+  },
+  "generator": {
+    "services": 5,
+    "max_depth": 4,
+    "max_spans": 25,
+    "service_name": "tercios",
+    "span_name": "load-test-span"
+  }
+}
