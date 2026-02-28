@@ -6,12 +6,13 @@ import (
 	"time"
 
 	"github.com/javiermolinar/tercios/internal/metrics"
+	"github.com/javiermolinar/tercios/internal/model"
 	"go.opentelemetry.io/otel/sdk/trace"
 )
 
 type BatchStage interface {
 	name() string
-	process(ctx context.Context, spans []trace.ReadOnlySpan) ([]trace.ReadOnlySpan, error)
+	process(ctx context.Context, spans []model.Span) ([]model.Span, error)
 }
 
 type ExporterFactory interface {
@@ -27,7 +28,7 @@ func New(stages ...BatchStage) *Pipeline {
 	return &Pipeline{stages: stages}
 }
 
-func (p *Pipeline) Process(ctx context.Context, spans []trace.ReadOnlySpan) ([]trace.ReadOnlySpan, error) {
+func (p *Pipeline) Process(ctx context.Context, spans []model.Span) ([]model.Span, error) {
 	batch := spans
 	for _, stage := range p.stages {
 		if stage == nil {
@@ -74,7 +75,11 @@ func (p *Pipeline) Run(ctx context.Context, runner *ConcurrencyRunner, factory E
 				return err
 			}
 			if len(batch) > 0 {
-				if err := exporter.ExportSpans(ctx, batch); err != nil {
+				readonlyBatch, err := model.Batch(batch).ToReadOnlySpans(ctx)
+				if err != nil {
+					return fmt.Errorf("convert model batch to readonly spans: %w", err)
+				}
+				if err := exporter.ExportSpans(ctx, readonlyBatch); err != nil {
 					return err
 				}
 			}

@@ -44,7 +44,7 @@ go run ./cmd/tercios \
   --error-rate=0.2
 ```
 
-Chaos policy example file: `examples/chaos-policies.json`
+Chaos policy example file: `examples/chaos-policies.json` (typed attribute values: `string|int|float|bool`).
 
 Dry-run JSON output (summary is written to stderr):
 

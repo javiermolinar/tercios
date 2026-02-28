@@ -9,7 +9,10 @@
         "service_name": "post-service",
         "span_kinds": ["server"],
         "attributes": {
-          "http.route": "/posts"
+          "http.route": {
+            "type": "string",
+            "value": "/posts"
+          }
         }
       },
       "actions": [
@@ -17,7 +20,10 @@
           "type": "set_attribute",
           "scope": "span",
           "name": "http.response.status_code",
-          "value": 500
+          "value": {
+            "type": "int",
+            "value": 500
+          }
         },
         {
           "type": "set_status",
@@ -37,7 +43,10 @@
           "type": "set_attribute",
           "scope": "resource",
           "name": "service.version",
-          "value": "2.11.0"
+          "value": {
+            "type": "string",
+            "value": "2.11.0"
+          }
         }
       ]
     }

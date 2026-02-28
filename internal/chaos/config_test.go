@@ -17,11 +17,11 @@ func TestDecodeJSONValid(t *testing.T) {
         "service_name": "post-service",
         "span_kinds": ["server"],
         "attributes": {
-          "http.route": "/posts"
+          "http.route": { "type": "string", "value": "/posts" }
         }
       },
       "actions": [
-        { "type": "set_attribute", "scope": "span", "name": "http.response.status_code", "value": 500 },
+        { "type": "set_attribute", "scope": "span", "name": "http.response.status_code", "value": { "type": "int", "value": 500 } },
         { "type": "set_status", "code": "error", "message": "simulated failure" }
       ]
     }
@@ -48,7 +48,7 @@ func TestDecodeJSONInvalidActionScope(t *testing.T) {
       "probability": 1,
       "match": {},
       "actions": [
-        { "type": "set_attribute", "scope": "trace", "name": "service.version", "value": "2.11.0" }
+        { "type": "set_attribute", "scope": "trace", "name": "service.version", "value": { "type": "string", "value": "2.11.0" } }
       ]
     }
   ]
@@ -69,6 +69,26 @@ func TestDecodeJSONInvalidProbability(t *testing.T) {
       "match": {},
       "actions": [
         { "type": "set_status", "code": "ok" }
+      ]
+    }
+  ]
+}`
+
+	_, err := DecodeJSON(strings.NewReader(input))
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+}
+
+func TestDecodeJSONInvalidAttributeValue(t *testing.T) {
+	input := `{
+  "policies": [
+    {
+      "name": "invalid-value",
+      "probability": 1,
+      "match": {},
+      "actions": [
+        { "type": "set_attribute", "scope": "span", "name": "http.response.status_code", "value": { "type": "int", "value": null } }
       ]
     }
   ]
