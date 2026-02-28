@@ -60,6 +60,9 @@ type Action struct {
 	// set_status
 	Code    string `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
+
+	// add_latency
+	DeltaMs int64 `json:"delta_ms,omitempty"`
 }
 
 func DefaultConfig() Config {
@@ -138,6 +141,8 @@ func validateAction(policyName string, action Action) error {
 		if code != "ok" && code != "error" && code != "unset" {
 			return fmt.Errorf("policy %s: set_status code must be ok, error, or unset", policyName)
 		}
+	case "add_latency":
+		// delta_ms can be positive or negative. A zero delta is a valid no-op.
 	default:
 		return fmt.Errorf("policy %s: unsupported action type %q", policyName, action.Type)
 	}

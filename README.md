@@ -77,7 +77,7 @@ go run ./cmd/tercios \
 
 ## 3) Chaos testing (trace behavior mutation)
 
-In this context, **chaos testing** means mutating generated trace data using policies (for example status, attributes, resource values) to test downstream behavior and analysis.
+In this context, **chaos testing** means mutating generated trace data using policies (for example status, attributes, resource values, and latency) to test downstream behavior and analysis.
 
 This is **not** infrastructure chaos (no pods/nodes/network failures). It is telemetry/trace-shape behavior testing.
 
@@ -102,6 +102,14 @@ Key chaos options:
 - `--dry-run -o json`: inspect mutated spans locally
 - `--service-name`: useful to guarantee policy selectors match generated spans
 - `--error-rate`: set to `0` when you want policy-driven errors only
+
+Policy actions currently supported:
+- `set_status`
+- `set_attribute`
+- `add_latency` (uses `delta_ms`, supports positive and negative values)
+
+Latency safety:
+- if `add_latency` would make a non-positive duration, Tercios clamps span duration to `1ms`.
 
 Policy JSON uses typed values:
 - `string`

@@ -39,6 +39,7 @@ type actionKind int
 const (
 	actionKindSetAttribute actionKind = iota + 1
 	actionKindSetStatus
+	actionKindAddLatency
 )
 
 type compiledAction struct {
@@ -50,6 +51,8 @@ type compiledAction struct {
 
 	statusCode    codes.Code
 	statusMessage string
+
+	latencyDelta time.Duration
 }
 
 func NewEngine(cfg Config) (*Engine, error) {
@@ -238,6 +241,11 @@ func compileAction(action Action) (compiledAction, error) {
 			statusCode:    statusCode,
 			statusMessage: action.Message,
 		}, nil
+	case "add_latency":
+		return compiledAction{
+			kind:         actionKindAddLatency,
+			latencyDelta: time.Duration(action.DeltaMs) * time.Millisecond,
+		}, nil
 	default:
 		return compiledAction{}, fmt.Errorf("unsupported action type %q", action.Type)
 	}
@@ -353,6 +361,8 @@ func applyAction(span *Span, action compiledAction) {
 	case actionKindSetStatus:
 		span.StatusCode = action.statusCode
 		span.StatusDescription = action.statusMessage
+	case actionKindAddLatency:
+		applyLatency(span, action.latencyDelta)
 	}
 }
 
@@ -372,6 +382,17 @@ func applySetAttribute(span *Span, action compiledAction) {
 		}
 		span.ResourceAttributes[action.name] = action.value
 	}
+}
+
+func applyLatency(span *Span, delta time.Duration) {
+	if span == nil || delta == 0 {
+		return
+	}
+	newEnd := span.EndTime.Add(delta)
+	if !newEnd.After(span.StartTime) {
+		newEnd = span.StartTime.Add(1 * time.Millisecond)
+	}
+	span.EndTime = newEnd
 }
 
 func parseStatusCode(code string) (codes.Code, error) {

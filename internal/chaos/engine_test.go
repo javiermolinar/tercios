@@ -2,6 +2,7 @@ package chaos
 
 import (
 	"testing"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -210,13 +211,54 @@ func TestNewSeededShouldApplyRespectsBounds(t *testing.T) {
 	}
 }
 
+func TestEngineAddLatencyAndClamp(t *testing.T) {
+	start := time.Date(2026, time.January, 27, 12, 0, 0, 0, time.UTC)
+	end := start.Add(100 * time.Millisecond)
+	engine, err := NewEngine(Config{
+		Policies: []Policy{{
+			Name:        "slow-and-fast",
+			Probability: 1,
+			Match:       Match{ServiceName: "post-service"},
+			Actions: []Action{
+				{Type: "add_latency", DeltaMs: 250},
+				{Type: "add_latency", DeltaMs: -500},
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("NewEngine() error = %v", err)
+	}
+
+	out := engine.Apply([]Span{{
+		Name:               "POST /posts",
+		Kind:               oteltrace.SpanKindServer,
+		StartTime:          start,
+		EndTime:            end,
+		Attributes:         map[string]attribute.Value{"service.name": attribute.StringValue("post-service")},
+		ResourceAttributes: map[string]attribute.Value{"service.name": attribute.StringValue("post-service")},
+	}}, func(float64) bool { return true })
+
+	duration := out[0].EndTime.Sub(out[0].StartTime)
+	if duration <= 0 {
+		t.Fatalf("expected positive duration, got %s", duration)
+	}
+	if duration != 1*time.Millisecond {
+		t.Fatalf("expected clamped duration 1ms, got %s", duration)
+	}
+}
+
 func TestEngineDoesNotMutateInput(t *testing.T) {
+	start := time.Date(2026, time.January, 27, 12, 0, 0, 0, time.UTC)
+	end := start.Add(100 * time.Millisecond)
 	engine, err := NewEngine(Config{
 		Policies: []Policy{{
 			Name:        "set-status",
 			Probability: 1,
 			Match:       Match{ServiceName: "post-service"},
-			Actions:     []Action{{Type: "set_status", Code: "error"}},
+			Actions: []Action{
+				{Type: "set_status", Code: "error"},
+				{Type: "add_latency", DeltaMs: 50},
+			},
 		}},
 	})
 	if err != nil {
@@ -226,6 +268,8 @@ func TestEngineDoesNotMutateInput(t *testing.T) {
 	in := []Span{{
 		Name:               "POST /posts",
 		Kind:               oteltrace.SpanKindServer,
+		StartTime:          start,
+		EndTime:            end,
 		Attributes:         map[string]attribute.Value{"service.name": attribute.StringValue("post-service")},
 		ResourceAttributes: map[string]attribute.Value{"service.name": attribute.StringValue("post-service")},
 		StatusCode:         codes.Ok,
@@ -235,7 +279,13 @@ func TestEngineDoesNotMutateInput(t *testing.T) {
 	if in[0].StatusCode != codes.Ok {
 		t.Fatalf("expected input to remain unchanged, got %s", in[0].StatusCode)
 	}
+	if in[0].EndTime != end {
+		t.Fatalf("expected input end time unchanged, got %s", in[0].EndTime)
+	}
 	if out[0].StatusCode != codes.Error {
 		t.Fatalf("expected output status error, got %s", out[0].StatusCode)
+	}
+	if out[0].EndTime.Sub(out[0].StartTime) != 150*time.Millisecond {
+		t.Fatalf("expected output duration 150ms, got %s", out[0].EndTime.Sub(out[0].StartTime))
 	}
 }

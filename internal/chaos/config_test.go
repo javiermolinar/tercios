@@ -22,7 +22,8 @@ func TestDecodeJSONValid(t *testing.T) {
       },
       "actions": [
         { "type": "set_attribute", "scope": "span", "name": "http.response.status_code", "value": { "type": "int", "value": 500 } },
-        { "type": "set_status", "code": "error", "message": "simulated failure" }
+        { "type": "set_status", "code": "error", "message": "simulated failure" },
+        { "type": "add_latency", "delta_ms": 120 }
       ]
     }
   ]
@@ -97,5 +98,25 @@ func TestDecodeJSONInvalidAttributeValue(t *testing.T) {
 	_, err := DecodeJSON(strings.NewReader(input))
 	if err == nil {
 		t.Fatalf("expected error, got nil")
+	}
+}
+
+func TestDecodeJSONAddLatencyAllowsNegative(t *testing.T) {
+	input := `{
+  "policies": [
+    {
+      "name": "faster",
+      "probability": 1,
+      "match": {},
+      "actions": [
+        { "type": "add_latency", "delta_ms": -250 }
+      ]
+    }
+  ]
+}`
+
+	_, err := DecodeJSON(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("expected valid config, got error: %v", err)
 	}
 }

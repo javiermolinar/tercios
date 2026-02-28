@@ -22,6 +22,10 @@
             "type": "int",
             "value": 500
           }
+        },
+        {
+          "type": "add_latency",
+          "delta_ms": 120
         }
       ]
     },
