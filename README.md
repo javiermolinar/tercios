@@ -44,6 +44,8 @@ go run ./cmd/tercios \
   --error-rate=0.2
 ```
 
+Chaos policy example file: `examples/chaos-policies.json`
+
 Dry-run JSON output (summary is written to stderr):
 
 ```bash

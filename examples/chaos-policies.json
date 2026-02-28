@@ -1,0 +1,45 @@
+{
+  "seed": 42,
+  "policy_mode": "first_match",
+  "policies": [
+    {
+      "name": "post-500",
+      "probability": 0.2,
+      "match": {
+        "service_name": "post-service",
+        "span_kinds": ["server"],
+        "attributes": {
+          "http.route": "/posts"
+        }
+      },
+      "actions": [
+        {
+          "type": "set_attribute",
+          "scope": "span",
+          "name": "http.response.status_code",
+          "value": 500
+        },
+        {
+          "type": "set_status",
+          "code": "error",
+          "message": "simulated failure"
+        }
+      ]
+    },
+    {
+      "name": "post-version",
+      "probability": 0.1,
+      "match": {
+        "service_name": "post-service"
+      },
+      "actions": [
+        {
+          "type": "set_attribute",
+          "scope": "resource",
+          "name": "service.version",
+          "value": "2.11.0"
+        }
+      ]
+    }
+  ]
+}
