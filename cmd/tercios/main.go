@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/javiermolinar/tercios/internal/chaos"
 	"github.com/javiermolinar/tercios/internal/config"
 	"github.com/javiermolinar/tercios/internal/metrics"
 	"github.com/javiermolinar/tercios/internal/otlp"
@@ -32,6 +33,8 @@ func main() {
 		errorRate              float64
 		serviceName            string
 		spanName               string
+		chaosPoliciesFile      string
+		chaosSeed              int64
 		dryRun                 bool
 		output                 string
 		headers                config.HeaderFlags
@@ -51,6 +54,8 @@ func main() {
 	flag.Float64Var(&errorRate, "error-rate", defaults.Generator.ErrorRate, "probability (0..1) of spans marked as error")
 	flag.StringVar(&serviceName, "service-name", defaults.Generator.ServiceName, "service.name attribute for spans")
 	flag.StringVar(&spanName, "span-name", defaults.Generator.SpanName, "span name to emit")
+	flag.StringVar(&chaosPoliciesFile, "chaos-policies-file", "", "path to chaos policies JSON file")
+	flag.Int64Var(&chaosSeed, "chaos-seed", 0, "override chaos policy seed (0 uses file/default)")
 	flag.BoolVar(&dryRun, "dry-run", false, "generate traces without exporting to OTLP")
 	flag.StringVar(&output, "output", string(otlp.DryRunOutputSummary), "output format: summary or json")
 	flag.StringVar(&output, "o", string(otlp.DryRunOutputSummary), "output format shorthand: summary or json")
@@ -120,9 +125,26 @@ func main() {
 	}
 
 	runner := pipeline.NewConcurrencyRunner(cfg.Concurrency.Exporters, cfg.Requests.PerExporter)
-	pipe := pipeline.New(
+	stages := []pipeline.BatchStage{
 		pipeline.NewGeneratorStage(&generator),
-	)
+	}
+	if chaosPoliciesFile != "" {
+		chaosCfg, err := chaos.LoadFromJSON(chaosPoliciesFile)
+		if err != nil {
+			log.Fatalf("invalid chaos policies: %v", err)
+		}
+		if chaosSeed != 0 {
+			chaosCfg.Seed = chaosSeed
+		}
+		chaosEngine, err := chaos.NewEngine(chaosCfg)
+		if err != nil {
+			log.Fatalf("create chaos engine: %v", err)
+		}
+		chaosDecider := chaos.NewSeededShouldApply(chaosCfg.Seed)
+		stages = append(stages, pipeline.NewChaosStage(chaosEngine, chaosDecider))
+	}
+
+	pipe := pipeline.New(stages...)
 	err = pipe.Run(ctx, runner, factory, cfg.Requests.Interval.Duration, cfg.Requests.For.Duration)
 	summary := metrics.FormatSummary(pipe.Summary())
 	if dryRun && outputFormat == otlp.DryRunOutputJSON {

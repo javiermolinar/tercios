@@ -1,21 +1,19 @@
 {
   "seed": 42,
-  "policy_mode": "first_match",
+  "policy_mode": "all",
   "policies": [
     {
-      "name": "post-500",
-      "probability": 0.2,
+      "name": "post-service-errors",
+      "probability": 0.3,
       "match": {
-        "service_name": "post-service",
-        "span_kinds": ["server"],
-        "attributes": {
-          "http.route": {
-            "type": "string",
-            "value": "/posts"
-          }
-        }
+        "service_name": "post-service"
       },
       "actions": [
+        {
+          "type": "set_status",
+          "code": "error",
+          "message": "simulated failure"
+        },
         {
           "type": "set_attribute",
           "scope": "span",
@@ -24,16 +22,11 @@
             "type": "int",
             "value": 500
           }
-        },
-        {
-          "type": "set_status",
-          "code": "error",
-          "message": "simulated failure"
         }
       ]
     },
     {
-      "name": "post-version",
+      "name": "post-service-version-shift",
       "probability": 0.1,
       "match": {
         "service_name": "post-service"
@@ -42,10 +35,10 @@
         {
           "type": "set_attribute",
           "scope": "resource",
-          "name": "service.version",
+          "name": "service.name",
           "value": {
             "type": "string",
-            "value": "2.11.0"
+            "value": "post-service-v2"
           }
         }
       ]

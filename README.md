@@ -1,116 +1,139 @@
 # Tercios
 
-Tercios is a CLI tool for load testing OTLP-compatible endpoints by emitting synthetic traces with configurable concurrency, timing, and realistic service graphs.
+Tercios is a CLI tool to generate OTLP traces for testing collectors and tracing pipelines.
 
-## Build & Run
+## Build
 
 ```bash
 make build
-./tercios --endpoint=localhost:4317
 ```
 
-## Options
+---
 
-- `--endpoint` OTLP endpoint (gRPC default: `host:port`, HTTP: `http(s)://host:port/v1/traces`).
-- `--protocol` `grpc` or `http`.
-- `--insecure` Disable TLS for the exporter (default: true).
-- `--header` HTTP/gRPC headers (`Key=Value` or `Key: Value`), repeatable.
-- `--exporters` Number of concurrent exporters (connections).
-- `--max-requests` Number of traces per exporter.
-- `--request-interval` Seconds between traces per exporter (`0` for no delay).
-- `--for` Seconds to send traces per exporter (`0` for no duration limit).
-- `--services` Number of distinct service names (fruit-based when `--service-name` is empty).
-- `--max-depth` Maximum span depth per trace.
-- `--max-spans` Maximum spans per trace.
-- `--error-rate` Probability (`0..1`) of emitting error spans (default: `0.2`).
-- `--service-name` Base service name (optional; random if empty).
-- `--span-name` Base span name (optional; random if empty).
-- `--dry-run` Generate traces without exporting to OTLP.
-- `-o, --output` Output format (`summary` or `json`). `json` requires `--dry-run`.
+## 1) First test (minimal)
 
-## Example
+If you just want to verify Tercios works, run it in dry-run mode (no collector needed):
+
+```bash
+go run ./cmd/tercios --dry-run
+```
+
+What this does (with defaults):
+- generates 1 request
+- with 1 exporter worker
+- prints a summary
+
+If you want to see the generated spans as JSON:
+
+```bash
+go run ./cmd/tercios --dry-run -o json 2>/dev/null
+```
+
+---
+
+## 2) Stress testing an OpenTelemetry Collector
+
+In this context, **stress testing** means sending high-volume traces to an OTEL collector to measure:
+- throughput capacity
+- error/failure rate
+- latency under load
+- behavior under sustained traffic
+
+Example (HTTP collector):
 
 ```bash
 go run ./cmd/tercios \
   --protocol=http \
   --endpoint=http://localhost:4318/v1/traces \
-  --header='Authorization=Basic ...' \
-  --exporters=3 \
+  --exporters=50 \
+  --max-requests=1000 \
+  --request-interval=0 \
+  --services=20 \
+  --max-depth=5 \
+  --max-spans=30 \
+  --error-rate=0.05
+```
+
+Key options for stress tests:
+- `--endpoint`, `--protocol`: collector target
+- `--exporters`: parallel workers/connections
+- `--max-requests`: total work per exporter
+- `--request-interval`: pacing (`0` = max speed)
+- `--for`: duration-based runs
+- `--header`: auth/custom headers
+
+Duration-based run example:
+
+```bash
+go run ./cmd/tercios \
+  --endpoint=localhost:4317 \
+  --exporters=20 \
+  --max-requests=1000000 \
+  --for=60 \
+  --request-interval=0
+```
+
+---
+
+## 3) Chaos testing (trace behavior mutation)
+
+In this context, **chaos testing** means mutating generated trace data using policies (for example status, attributes, resource values) to test downstream behavior and analysis.
+
+This is **not** infrastructure chaos (no pods/nodes/network failures). It is telemetry/trace-shape behavior testing.
+
+Policy file example: `examples/chaos-policies.json`
+
+```bash
+go run ./cmd/tercios \
+  --dry-run -o json \
+  --chaos-policies-file=./examples/chaos-policies.json \
+  --chaos-seed=42 \
+  --exporters=1 \
   --max-requests=10 \
-  --request-interval=0.5 \
-  --services=5 \
-  --max-depth=4 \
-  --max-spans=25 \
-  --error-rate=0.2
+  --services=1 \
+  --service-name=post-service \
+  --error-rate=0 \
+  2>/dev/null
 ```
 
-Chaos policy example file: `examples/chaos-policies.json` (typed attribute values: `string|int|float|bool`).
+Key chaos options:
+- `--chaos-policies-file`: JSON policy definitions
+- `--chaos-seed`: deterministic probability decisions
+- `--dry-run -o json`: inspect mutated spans locally
+- `--service-name`: useful to guarantee policy selectors match generated spans
+- `--error-rate`: set to `0` when you want policy-driven errors only
 
-Dry-run JSON output (summary is written to stderr):
+Policy JSON uses typed values:
+- `string`
+- `int`
+- `float`
+- `bool`
 
-```bash
-go run ./cmd/tercios --dry-run -o json --exporters=1 --max-requests=1
-```
+---
 
-JSON-only one-liner:
+## CLI options (reference)
 
-```bash
-go run ./cmd/tercios --dry-run -o json --exporters=1 --max-requests=1 2>/dev/null
-```
+- `--endpoint` OTLP endpoint (gRPC: `host:port`, HTTP: `http(s)://host:port/v1/traces`)
+- `--protocol` `grpc` or `http`
+- `--insecure` disable TLS
+- `--header` repeatable headers (`Key=Value` or `Key: Value`)
+- `--exporters` concurrent exporters
+- `--max-requests` requests per exporter
+- `--request-interval` seconds between requests
+- `--for` duration in seconds
+- `--services` number of distinct services
+- `--max-depth` max span depth
+- `--max-spans` max spans per trace
+- `--error-rate` probability (`0..1`) of generated error spans
+- `--service-name` base service name
+- `--span-name` base span name
+- `--chaos-policies-file` path to chaos policy JSON
+- `--chaos-seed` override policy seed (`0` uses config/default)
+- `--dry-run` do not export, generate locally
+- `-o, --output` `summary` or `json` (json requires `--dry-run`)
 
-## JSON Config Example
+---
 
-`examples/config.json` shows the nested config shape used by `config.DecodeJSON`:
+## JSON config example
 
-```json
-{
-  "endpoint": {
-    "address": "localhost:4317",
-    "protocol": "grpc",
-    "insecure": true,
-    "headers": {
-      "Authorization": "Basic ..."
-    }
-  },
-  "concurrency": {
-    "exporters": 3
-  },
-  "requests": {
-    "per_exporter": 10,
-    "interval": "500ms",
-    "for": "0s"
-  },
-  "generator": {
-    "services": 5,
-    "max_depth": 4,
-    "max_spans": 25,
-    "error_rate": 0.2,
-    "service_name": "tercios",
-    "span_name": "load-test-span"
-  }
-}
-```
-
-Example summary output:
-
-```
-Sent 10k requests
-Success: 9.8k
-Failures: 200
-Avg latency: 120ms
-P95 latency: 250ms
-```
-
-## Architecture
-
-Tercios uses a composable pipeline:
-
-- `ConcurrencyRunner` manages parallel exporters and per-exporter request counts.
-- The pipeline stages operate on trace batches, starting with a generator stage and then middleware transforms before export.
-
-Key implementation areas:
-
-- `cmd/tercios/` CLI flags and pipeline wiring.
-- `internal/tracegen/` trace shape generation and span timing.
-- `internal/otlp/` exporter selection and endpoint/header handling.
-- `internal/metrics/` summary stats.
+`examples/config.json` shows the nested config shape used by `config.DecodeJSON`.
