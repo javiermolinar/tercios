@@ -5,15 +5,18 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 type SpanSpec struct {
-	Name       string
-	Kind       oteltrace.SpanKind
-	Start      time.Time
-	End        time.Time
-	Attributes []attribute.KeyValue
+	Name              string
+	Kind              oteltrace.SpanKind
+	Start             time.Time
+	End               time.Time
+	Attributes        []attribute.KeyValue
+	StatusCode        codes.Code
+	StatusDescription string
 }
 
 type TraceBuilder struct {
@@ -64,6 +67,9 @@ func (b *TraceBuilder) newSpan(spec SpanSpec, parent *SpanBuilder) *SpanBuilder 
 	)
 	if len(spec.Attributes) > 0 {
 		span.SetAttributes(spec.Attributes...)
+	}
+	if spec.StatusCode != codes.Unset || spec.StatusDescription != "" {
+		span.SetStatus(spec.StatusCode, spec.StatusDescription)
 	}
 
 	node := &SpanBuilder{

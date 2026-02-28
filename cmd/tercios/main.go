@@ -29,6 +29,7 @@ func main() {
 		services               int
 		maxDepth               int
 		maxSpans               int
+		errorRate              float64
 		serviceName            string
 		spanName               string
 		dryRun                 bool
@@ -47,6 +48,7 @@ func main() {
 	flag.IntVar(&services, "services", defaults.Generator.Services, "number of distinct service names to emit")
 	flag.IntVar(&maxDepth, "max-depth", defaults.Generator.MaxDepth, "maximum span depth per trace")
 	flag.IntVar(&maxSpans, "max-spans", defaults.Generator.MaxSpans, "maximum spans per trace")
+	flag.Float64Var(&errorRate, "error-rate", defaults.Generator.ErrorRate, "probability (0..1) of spans marked as error")
 	flag.StringVar(&serviceName, "service-name", defaults.Generator.ServiceName, "service.name attribute for spans")
 	flag.StringVar(&spanName, "span-name", defaults.Generator.SpanName, "span name to emit")
 	flag.BoolVar(&dryRun, "dry-run", false, "generate traces without exporting to OTLP")
@@ -75,6 +77,7 @@ func main() {
 			Services:    services,
 			MaxDepth:    maxDepth,
 			MaxSpans:    maxSpans,
+			ErrorRate:   errorRate,
 			ServiceName: serviceName,
 			SpanName:    spanName,
 		},
@@ -113,6 +116,7 @@ func main() {
 		Services:    cfg.Generator.Services,
 		MaxDepth:    cfg.Generator.MaxDepth,
 		MaxSpans:    cfg.Generator.MaxSpans,
+		ErrorRate:   cfg.Generator.ErrorRate,
 	}
 
 	runner := pipeline.NewConcurrencyRunner(cfg.Concurrency.Exporters, cfg.Requests.PerExporter)

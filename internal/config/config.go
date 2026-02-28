@@ -69,11 +69,12 @@ type RequestConfig struct {
 }
 
 type GeneratorConfig struct {
-	Services    int    `json:"services"`
-	MaxDepth    int    `json:"max_depth"`
-	MaxSpans    int    `json:"max_spans"`
-	ServiceName string `json:"service_name"`
-	SpanName    string `json:"span_name"`
+	Services    int     `json:"services"`
+	MaxDepth    int     `json:"max_depth"`
+	MaxSpans    int     `json:"max_spans"`
+	ErrorRate   float64 `json:"error_rate"`
+	ServiceName string  `json:"service_name"`
+	SpanName    string  `json:"span_name"`
 }
 
 type Config struct {
@@ -99,13 +100,14 @@ func DefaultConfig() Config {
 			Interval:    Duration{Duration: 0},
 			For:         Duration{Duration: 0},
 		},
-	Generator: GeneratorConfig{
-		Services:    3,
-		MaxDepth:    3,
-		MaxSpans:    10,
-		ServiceName: "",
-		SpanName:    "",
-	},
+		Generator: GeneratorConfig{
+			Services:    3,
+			MaxDepth:    3,
+			MaxSpans:    10,
+			ErrorRate:   0.2,
+			ServiceName: "",
+			SpanName:    "",
+		},
 	}
 }
 
@@ -158,6 +160,9 @@ func (c Config) Validate() error {
 	}
 	if c.Generator.MaxSpans <= 0 {
 		return fmt.Errorf("max spans must be > 0")
+	}
+	if c.Generator.ErrorRate < 0 || c.Generator.ErrorRate > 1 {
+		return fmt.Errorf("error rate must be between 0 and 1")
 	}
 	return nil
 }

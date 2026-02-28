@@ -19,6 +19,7 @@
     "services": 5,
     "max_depth": 4,
     "max_spans": 25,
+    "error_rate": 0.2,
     "service_name": "tercios",
     "span_name": "load-test-span"
   }

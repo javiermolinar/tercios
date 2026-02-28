@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/semconv/v1.17.0"
@@ -21,6 +22,7 @@ type Generator struct {
 	Services    int
 	MaxDepth    int
 	MaxSpans    int
+	ErrorRate   float64
 }
 
 type batchCollector struct {
@@ -99,12 +101,18 @@ func (g Generator) emitTrace(ctx context.Context, tracer oteltrace.Tracer, servi
 	rootStart := traceEnd.Add(-rootDuration)
 	builder := NewTraceBuilder(tracer, rootCtx)
 	rootService := g.serviceName(serviceNames, rng)
+	rootKind := randomSpanKind(rng)
+	rootStatusCode, rootStatusDescription, httpStatus := randomSpanStatus(rng, g.ErrorRate)
+	rootAttributes := serviceAttributes(rootService)
+	rootAttributes = appendHTTPStatusAttribute(rootAttributes, rootKind, httpStatus)
 	_ = builder.AddSpan(SpanSpec{
-		Name:       g.spanName(serviceNames, rng),
-		Kind:       randomSpanKind(rng),
-		Start:      rootStart,
-		End:        traceEnd,
-		Attributes: serviceAttributes(rootService),
+		Name:              g.spanName(serviceNames, rng),
+		Kind:              rootKind,
+		Start:             rootStart,
+		End:               traceEnd,
+		Attributes:        rootAttributes,
+		StatusCode:        rootStatusCode,
+		StatusDescription: rootStatusDescription,
 	})
 
 	spansRemaining := spanCount - 1
@@ -230,6 +238,40 @@ func serviceAttributes(serviceName string) []attribute.KeyValue {
 	}
 }
 
+func randomSpanStatus(rng io.Reader, errorRate float64) (codes.Code, string, int) {
+	if errorRate <= 0 {
+		return codes.Ok, "", 200
+	}
+	if errorRate >= 1 {
+		return codes.Error, "simulated failure", 500
+	}
+
+	const precision = 1000
+	threshold := int(errorRate * precision)
+	if threshold <= 0 {
+		return codes.Ok, "", 200
+	}
+	if threshold >= precision {
+		return codes.Error, "simulated failure", 500
+	}
+
+	roll, err := randomIndex(rng, precision)
+	if err != nil {
+		return codes.Ok, "", 200
+	}
+	if roll < threshold {
+		return codes.Error, "simulated failure", 500
+	}
+	return codes.Ok, "", 200
+}
+
+func appendHTTPStatusAttribute(attrs []attribute.KeyValue, kind oteltrace.SpanKind, httpStatus int) []attribute.KeyValue {
+	if kind != oteltrace.SpanKindServer && kind != oteltrace.SpanKindClient {
+		return attrs
+	}
+	return append(attrs, attribute.Int("http.response.status_code", httpStatus))
+}
+
 func randomSpanKind(rng io.Reader) oteltrace.SpanKind {
 	kinds := []oteltrace.SpanKind{
 		oteltrace.SpanKindClient,
@@ -352,13 +394,17 @@ func (g Generator) emitChildSpan(
 		return nil, fmt.Errorf("random child window: %w", err)
 	}
 	service := g.serviceName(serviceNames, rng)
+	statusCode, statusDescription, httpStatus := randomSpanStatus(rng, g.ErrorRate)
 	spanAttrs := append(serviceAttributes(service), attrs...)
+	spanAttrs = appendHTTPStatusAttribute(spanAttrs, kind, httpStatus)
 	child := parent.AddChildSpan(SpanSpec{
-		Name:       g.spanName(serviceNames, rng),
-		Kind:       kind,
-		Start:      childStart,
-		End:        childEnd,
-		Attributes: spanAttrs,
+		Name:              g.spanName(serviceNames, rng),
+		Kind:              kind,
+		Start:             childStart,
+		End:               childEnd,
+		Attributes:        spanAttrs,
+		StatusCode:        statusCode,
+		StatusDescription: statusDescription,
 	})
 	return child, nil
 }

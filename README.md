@@ -22,6 +22,7 @@ make build
 - `--services` Number of distinct service names (fruit-based when `--service-name` is empty).
 - `--max-depth` Maximum span depth per trace.
 - `--max-spans` Maximum spans per trace.
+- `--error-rate` Probability (`0..1`) of emitting error spans (default: `0.2`).
 - `--service-name` Base service name (optional; random if empty).
 - `--span-name` Base span name (optional; random if empty).
 - `--dry-run` Generate traces without exporting to OTLP.
@@ -39,7 +40,8 @@ go run ./cmd/tercios \
   --request-interval=0.5 \
   --services=5 \
   --max-depth=4 \
-  --max-spans=25
+  --max-spans=25 \
+  --error-rate=0.2
 ```
 
 Dry-run JSON output (summary is written to stderr):
@@ -80,6 +82,7 @@ go run ./cmd/tercios --dry-run -o json --exporters=1 --max-requests=1 2>/dev/nul
     "services": 5,
     "max_depth": 4,
     "max_spans": 25,
+    "error_rate": 0.2,
     "service_name": "tercios",
     "span_name": "load-test-span"
   }
