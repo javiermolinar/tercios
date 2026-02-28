@@ -31,6 +31,8 @@ func main() {
 		maxSpans               int
 		serviceName            string
 		spanName               string
+		dryRun                 bool
+		output                 string
 		headers                config.HeaderFlags
 	)
 
@@ -47,6 +49,9 @@ func main() {
 	flag.IntVar(&maxSpans, "max-spans", defaults.Generator.MaxSpans, "maximum spans per trace")
 	flag.StringVar(&serviceName, "service-name", defaults.Generator.ServiceName, "service.name attribute for spans")
 	flag.StringVar(&spanName, "span-name", defaults.Generator.SpanName, "span name to emit")
+	flag.BoolVar(&dryRun, "dry-run", false, "generate traces without exporting to OTLP")
+	flag.StringVar(&output, "output", string(otlp.DryRunOutputSummary), "output format: summary or json")
+	flag.StringVar(&output, "o", string(otlp.DryRunOutputSummary), "output format shorthand: summary or json")
 	flag.Var(&headers, "header", "Header in Key=Value or Key: Value format; repeatable")
 	flag.Parse()
 	requestInterval := time.Duration(requestIntervalSeconds * float64(time.Second))
@@ -81,11 +86,25 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	factory := otlp.ExporterFactory{
-		Protocol: cfg.Endpoint.Protocol,
-		Endpoint: cfg.Endpoint.Address,
-		Insecure: cfg.Endpoint.Insecure,
-		Headers:  cfg.Endpoint.Headers,
+	outputFormat, err := otlp.ParseDryRunOutput(output)
+	if err != nil {
+		log.Fatalf("invalid output format: %v", err)
+	}
+	if !dryRun && outputFormat != otlp.DryRunOutputSummary {
+		log.Fatalf("-o/--output=%s requires --dry-run", outputFormat)
+	}
+
+	var factory pipeline.ExporterFactory
+	if dryRun {
+		dryRunFactory := otlp.NewDryRunExporterFactory(outputFormat, os.Stdout)
+		factory = dryRunFactory
+	} else {
+		factory = otlp.ExporterFactory{
+			Protocol: cfg.Endpoint.Protocol,
+			Endpoint: cfg.Endpoint.Address,
+			Insecure: cfg.Endpoint.Insecure,
+			Headers:  cfg.Endpoint.Headers,
+		}
 	}
 
 	generator := tracegen.Generator{
@@ -100,8 +119,13 @@ func main() {
 	pipe := pipeline.New(
 		pipeline.NewGeneratorStage(&generator),
 	)
-	err := pipe.Run(ctx, runner, factory, cfg.Requests.Interval.Duration, cfg.Requests.For.Duration)
-	fmt.Println(metrics.FormatSummary(pipe.Summary()))
+	err = pipe.Run(ctx, runner, factory, cfg.Requests.Interval.Duration, cfg.Requests.For.Duration)
+	summary := metrics.FormatSummary(pipe.Summary())
+	if dryRun && outputFormat == otlp.DryRunOutputJSON {
+		fmt.Fprintln(os.Stderr, summary)
+	} else {
+		fmt.Println(summary)
+	}
 	if err != nil {
 		log.Printf("pipeline failed: %v", err)
 		os.Exit(1)

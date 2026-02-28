@@ -75,14 +75,6 @@ func (g Generator) GenerateBatch(ctx context.Context) ([]sdktrace.ReadOnlySpan, 
 	return collector.spans, nil
 }
 
-type spanNode struct {
-	ctx   context.Context
-	span  oteltrace.Span
-	depth int
-	start time.Time
-	end   time.Time
-}
-
 func (g Generator) emitTrace(ctx context.Context, tracer oteltrace.Tracer, serviceNames []string, rng io.Reader) error {
 	spanCount, err := randomSpanCount(rng, g.MaxSpans)
 	if err != nil {
@@ -105,24 +97,25 @@ func (g Generator) emitTrace(ctx context.Context, tracer oteltrace.Tracer, servi
 		return fmt.Errorf("random span duration: %w", err)
 	}
 	rootStart := traceEnd.Add(-rootDuration)
-	rootCtx, rootSpan := tracer.Start(
-		rootCtx,
-		g.spanName(serviceNames, rng),
-		oteltrace.WithSpanKind(randomSpanKind(rng)),
-		oteltrace.WithTimestamp(rootStart),
-	)
-	setServiceAttributes(rootSpan, g.serviceName(serviceNames, rng))
-	nodes := []spanNode{{ctx: rootCtx, span: rootSpan, depth: 1, start: rootStart, end: traceEnd}}
+	builder := NewTraceBuilder(tracer, rootCtx)
+	rootService := g.serviceName(serviceNames, rng)
+	_ = builder.AddSpan(SpanSpec{
+		Name:       g.spanName(serviceNames, rng),
+		Kind:       randomSpanKind(rng),
+		Start:      rootStart,
+		End:        traceEnd,
+		Attributes: serviceAttributes(rootService),
+	})
 
 	spansRemaining := spanCount - 1
 	for spansRemaining > 0 {
-		parentIndex := pickParentIndex(nodes, g.MaxDepth, rng)
-		parent := nodes[parentIndex]
+		parentIndex := pickParentIndex(builder.nodes, g.MaxDepth, rng)
+		parent := builder.nodes[parentIndex]
 		if parent.depth >= g.MaxDepth {
 			break
 		}
 
-		choice, err := randomIndex(rng, 3)
+		choice, err := randomIndex(rng, 4)
 		if err != nil {
 			return fmt.Errorf("random edge choice: %w", err)
 		}
@@ -133,41 +126,43 @@ func (g Generator) emitTrace(ctx context.Context, tracer oteltrace.Tracer, servi
 			if spansRemaining < 2 {
 				continue
 			}
-			clientNode, serverNode, err := g.emitPairedSpan(tracer, parent, serviceNames, rng, oteltrace.SpanKindClient, oteltrace.SpanKindServer)
+			_, _, err := g.emitPairedSpan(parent, serviceNames, rng, oteltrace.SpanKindClient, oteltrace.SpanKindServer)
 			if err != nil {
 				return err
 			}
-			nodes = append(nodes, clientNode, serverNode)
 			spansRemaining -= 2
 		case 1:
 			// Producer -> Consumer pair.
 			if spansRemaining < 2 {
 				continue
 			}
-			producerNode, consumerNode, err := g.emitPairedSpan(tracer, parent, serviceNames, rng, oteltrace.SpanKindProducer, oteltrace.SpanKindConsumer)
+			_, _, err := g.emitPairedSpan(parent, serviceNames, rng, oteltrace.SpanKindProducer, oteltrace.SpanKindConsumer)
 			if err != nil {
 				return err
 			}
-			nodes = append(nodes, producerNode, consumerNode)
 			spansRemaining -= 2
-		default:
+		case 2:
 			// DB request: client span with db attributes.
-			childNode, err := g.emitChildSpan(tracer, parent, serviceNames, rng, oteltrace.SpanKindClient, addDBAttributes)
+			_, err := g.emitChildSpan(parent, serviceNames, rng, oteltrace.SpanKindClient, dbAttributes())
 			if err != nil {
 				return err
 			}
-			nodes = append(nodes, childNode)
 			spansRemaining--
+		default:
+			// Fan-in: link an existing span as a child of a new parent.
+			child := pickLinkCandidate(builder.nodes, parent, g.MaxDepth, rng)
+			if child == nil {
+				continue
+			}
+			parent.AddChild(child)
 		}
 	}
 
-	for i := len(nodes) - 1; i >= 0; i-- {
-		nodes[i].span.End(oteltrace.WithTimestamp(nodes[i].end))
-	}
+	builder.EndAll()
 	return nil
 }
 
-func pickParentIndex(nodes []spanNode, maxDepth int, rng io.Reader) int {
+func pickParentIndex(nodes []*SpanBuilder, maxDepth int, rng io.Reader) int {
 	if maxDepth <= 1 {
 		return 0
 	}
@@ -186,6 +181,27 @@ func pickParentIndex(nodes []spanNode, maxDepth int, rng io.Reader) int {
 		}
 	}
 	return 0
+}
+
+func pickLinkCandidate(nodes []*SpanBuilder, parent *SpanBuilder, maxDepth int, rng io.Reader) *SpanBuilder {
+	if len(nodes) < 2 || parent == nil || parent.depth >= maxDepth {
+		return nil
+	}
+	for attempts := 0; attempts < 12; attempts++ {
+		index, err := randomIndex(rng, len(nodes))
+		if err != nil {
+			break
+		}
+		child := nodes[index]
+		if child == parent || parent.hasAncestor(child) {
+			continue
+		}
+		if parent.depth+1 > child.depth {
+			continue
+		}
+		return child
+	}
+	return nil
 }
 
 func (g Generator) spanName(serviceNames []string, rng io.Reader) string {
@@ -207,11 +223,11 @@ func (g Generator) serviceName(serviceNames []string, rng io.Reader) string {
 	return serviceNames[index]
 }
 
-func setServiceAttributes(span oteltrace.Span, serviceName string) {
-	span.SetAttributes(
+func serviceAttributes(serviceName string) []attribute.KeyValue {
+	return []attribute.KeyValue{
 		semconv.ServiceNameKey.String(serviceName),
 		attribute.String("service.name", serviceName),
-	)
+	}
 }
 
 func randomSpanKind(rng io.Reader) oteltrace.SpanKind {
@@ -317,16 +333,15 @@ func randomChildWindow(rng io.Reader, parentStart, parentEnd time.Time, duration
 }
 
 func (g Generator) emitChildSpan(
-	tracer oteltrace.Tracer,
-	parent spanNode,
+	parent *SpanBuilder,
 	serviceNames []string,
 	rng io.Reader,
 	kind oteltrace.SpanKind,
-	attrsFn func(span oteltrace.Span),
-) (spanNode, error) {
+	attrs []attribute.KeyValue,
+) (*SpanBuilder, error) {
 	childDuration, err := randomSpanDuration(rng)
 	if err != nil {
-		return spanNode{}, fmt.Errorf("random span duration: %w", err)
+		return nil, fmt.Errorf("random span duration: %w", err)
 	}
 	parentWindow := parent.end.Sub(parent.start)
 	if childDuration > parentWindow {
@@ -334,47 +349,45 @@ func (g Generator) emitChildSpan(
 	}
 	childStart, childEnd, err := randomChildWindow(rng, parent.start, parent.end, childDuration)
 	if err != nil {
-		return spanNode{}, fmt.Errorf("random child window: %w", err)
+		return nil, fmt.Errorf("random child window: %w", err)
 	}
-	childCtx, childSpan := tracer.Start(
-		parent.ctx,
-		g.spanName(serviceNames, rng),
-		oteltrace.WithSpanKind(kind),
-		oteltrace.WithTimestamp(childStart),
-	)
-	setServiceAttributes(childSpan, g.serviceName(serviceNames, rng))
-	if attrsFn != nil {
-		attrsFn(childSpan)
-	}
-	return spanNode{ctx: childCtx, span: childSpan, depth: parent.depth + 1, start: childStart, end: childEnd}, nil
+	service := g.serviceName(serviceNames, rng)
+	spanAttrs := append(serviceAttributes(service), attrs...)
+	child := parent.AddChildSpan(SpanSpec{
+		Name:       g.spanName(serviceNames, rng),
+		Kind:       kind,
+		Start:      childStart,
+		End:        childEnd,
+		Attributes: spanAttrs,
+	})
+	return child, nil
 }
 
 func (g Generator) emitPairedSpan(
-	tracer oteltrace.Tracer,
-	parent spanNode,
+	parent *SpanBuilder,
 	serviceNames []string,
 	rng io.Reader,
 	parentKind oteltrace.SpanKind,
 	childKind oteltrace.SpanKind,
-) (spanNode, spanNode, error) {
-	firstNode, err := g.emitChildSpan(tracer, parent, serviceNames, rng, parentKind, nil)
+) (*SpanBuilder, *SpanBuilder, error) {
+	firstNode, err := g.emitChildSpan(parent, serviceNames, rng, parentKind, nil)
 	if err != nil {
-		return spanNode{}, spanNode{}, err
+		return nil, nil, err
 	}
-	secondNode, err := g.emitChildSpan(tracer, firstNode, serviceNames, rng, childKind, nil)
+	secondNode, err := g.emitChildSpan(firstNode, serviceNames, rng, childKind, nil)
 	if err != nil {
-		return spanNode{}, spanNode{}, err
+		return nil, nil, err
 	}
 	return firstNode, secondNode, nil
 }
 
-func addDBAttributes(span oteltrace.Span) {
+func dbAttributes() []attribute.KeyValue {
 	systems := []string{"postgresql", "mysql", "redis", "mongodb"}
 	idx := time.Now().UnixNano() % int64(len(systems))
-	span.SetAttributes(
+	return []attribute.KeyValue{
 		attribute.String("db.system", systems[idx]),
 		attribute.String("db.name", "example"),
-	)
+	}
 }
 
 func randomTraceID(rng io.Reader) (oteltrace.TraceID, error) {

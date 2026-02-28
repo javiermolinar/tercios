@@ -24,6 +24,8 @@ make build
 - `--max-spans` Maximum spans per trace.
 - `--service-name` Base service name (optional; random if empty).
 - `--span-name` Base span name (optional; random if empty).
+- `--dry-run` Generate traces without exporting to OTLP.
+- `-o, --output` Output format (`summary` or `json`). `json` requires `--dry-run`.
 
 ## Example
 
@@ -38,6 +40,18 @@ go run ./cmd/tercios \
   --services=5 \
   --max-depth=4 \
   --max-spans=25
+```
+
+Dry-run JSON output (summary is written to stderr):
+
+```bash
+go run ./cmd/tercios --dry-run -o json --exporters=1 --max-requests=1
+```
+
+JSON-only one-liner:
+
+```bash
+go run ./cmd/tercios --dry-run -o json --exporters=1 --max-requests=1 2>/dev/null
 ```
 
 ## JSON Config Example
