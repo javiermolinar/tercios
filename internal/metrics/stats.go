@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/javiermolinar/tercios/internal/model"
 	"go.opentelemetry.io/otel/sdk/trace"
 )
 
@@ -126,6 +127,28 @@ func (e *InstrumentedExporter) ExportSpans(ctx context.Context, spans []trace.Re
 }
 
 func (e *InstrumentedExporter) Shutdown(ctx context.Context) error {
+	return e.inner.Shutdown(ctx)
+}
+
+type InstrumentedBatchExporter struct {
+	inner model.BatchExporter
+	stats *Stats
+}
+
+func NewInstrumentedBatchExporter(inner model.BatchExporter, stats *Stats) *InstrumentedBatchExporter {
+	return &InstrumentedBatchExporter{inner: inner, stats: stats}
+}
+
+func (e *InstrumentedBatchExporter) ExportBatch(ctx context.Context, batch model.Batch) error {
+	start := time.Now()
+	err := e.inner.ExportBatch(ctx, batch)
+	if e.stats != nil {
+		e.stats.Record(time.Since(start), err)
+	}
+	return err
+}
+
+func (e *InstrumentedBatchExporter) Shutdown(ctx context.Context) error {
 	return e.inner.Shutdown(ctx)
 }
 

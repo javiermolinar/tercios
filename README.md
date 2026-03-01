@@ -68,8 +68,18 @@ Duration-based run example:
 go run ./cmd/tercios \
   --endpoint=localhost:4317 \
   --exporters=20 \
-  --max-requests=1000000 \
+  --max-requests=0 \
   --for=60 \
+  --request-interval=0
+```
+
+Long-running mode (send forever, stop with Ctrl+C):
+
+```bash
+go run ./cmd/tercios \
+  --endpoint=localhost:4317 \
+  --exporters=20 \
+  --max-requests=0 \
   --request-interval=0
 ```
 
@@ -126,7 +136,7 @@ Policy JSON uses typed values:
 - `--insecure` disable TLS
 - `--header` repeatable headers (`Key=Value` or `Key: Value`)
 - `--exporters` concurrent exporters
-- `--max-requests` requests per exporter
+- `--max-requests` requests per exporter (`0` for no request limit)
 - `--request-interval` seconds between requests
 - `--for` duration in seconds
 - `--services` number of distinct services

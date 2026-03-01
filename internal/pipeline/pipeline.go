@@ -56,17 +56,35 @@ func (p *Pipeline) Run(ctx context.Context, runner *ConcurrencyRunner, factory E
 		workerStats := metrics.NewStats()
 		stats[workerID] = workerStats
 
-		exporter, err := factory.NewExporter(ctx)
-		if err != nil {
-			return err
+		var spanExporter trace.SpanExporter
+		var batchExporter model.BatchExporter
+		if batchFactory, ok := factory.(model.BatchExporterFactory); ok {
+			exporter, err := batchFactory.NewBatchExporter(ctx)
+			if err != nil {
+				return err
+			}
+			batchExporter = metrics.NewInstrumentedBatchExporter(exporter, workerStats)
+			defer batchExporter.Shutdown(ctx)
+		} else {
+			exporter, err := factory.NewExporter(ctx)
+			if err != nil {
+				return err
+			}
+			spanExporter = metrics.NewInstrumentedExporter(exporter, workerStats)
+			defer spanExporter.Shutdown(ctx)
 		}
-		defer exporter.Shutdown(ctx)
-
-		exporter = metrics.NewInstrumentedExporter(exporter, workerStats)
 
 		requests := runner.RequestsPerWorker()
 		start := time.Now()
-		for i := range requests {
+		for i := 0; ; i++ {
+			if requests > 0 && i >= requests {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
 			if requestDuration > 0 && time.Since(start) >= requestDuration {
 				break
 			}
@@ -75,19 +93,27 @@ func (p *Pipeline) Run(ctx context.Context, runner *ConcurrencyRunner, factory E
 				return err
 			}
 			if len(batch) > 0 {
-				readonlyBatch, err := model.Batch(batch).ToReadOnlySpans(ctx)
-				if err != nil {
-					return fmt.Errorf("convert model batch to readonly spans: %w", err)
-				}
-				if err := exporter.ExportSpans(ctx, readonlyBatch); err != nil {
-					return err
+				if batchExporter != nil {
+					if err := batchExporter.ExportBatch(ctx, model.Batch(batch)); err != nil {
+						return err
+					}
+				} else {
+					readonlyBatch, err := model.Batch(batch).ToReadOnlySpans(ctx)
+					if err != nil {
+						return fmt.Errorf("convert model batch to readonly spans: %w", err)
+					}
+					if err := spanExporter.ExportSpans(ctx, readonlyBatch); err != nil {
+						return err
+					}
 				}
 			}
-			if requestInterval > 0 && i < requests-1 {
-				select {
-				case <-ctx.Done():
-					return ctx.Err()
-				case <-time.After(requestInterval):
+			if requestInterval > 0 {
+				if requests <= 0 || i < requests-1 {
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-time.After(requestInterval):
+					}
 				}
 			}
 		}

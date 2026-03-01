@@ -143,8 +143,8 @@ func (c Config) Validate() error {
 	if c.Concurrency.Exporters <= 0 {
 		return fmt.Errorf("exporters must be > 0")
 	}
-	if c.Requests.PerExporter <= 0 {
-		return fmt.Errorf("max requests must be > 0")
+	if c.Requests.PerExporter < 0 {
+		return fmt.Errorf("max requests must be >= 0")
 	}
 	if c.Requests.Interval.Duration < 0 {
 		return fmt.Errorf("request interval must be >= 0")
