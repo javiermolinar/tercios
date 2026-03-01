@@ -3,10 +3,12 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/javiermolinar/tercios/internal/metrics"
 	"github.com/javiermolinar/tercios/internal/model"
+	"golang.org/x/sync/errgroup"
 )
 
 type BatchStage interface {
@@ -42,6 +44,11 @@ func (p *Pipeline) Process(ctx context.Context, spans []model.Span) ([]model.Spa
 	return batch, nil
 }
 
+type exportResult struct {
+	duration time.Duration
+	err      error
+}
+
 func (p *Pipeline) Run(ctx context.Context, runner *ConcurrencyRunner, factory ExporterFactory, requestInterval time.Duration, requestDuration time.Duration) error {
 	if runner == nil {
 		return fmt.Errorf("concurrency runner not configured")
@@ -49,56 +56,127 @@ func (p *Pipeline) Run(ctx context.Context, runner *ConcurrencyRunner, factory E
 	if factory == nil {
 		return fmt.Errorf("exporter factory not configured")
 	}
+	if runner.Workers() <= 0 {
+		return fmt.Errorf("workers must be > 0")
+	}
 
-	stats := make([]*metrics.Stats, runner.Workers())
-	err := runner.Run(ctx, func(ctx context.Context, workerID int) error {
-		workerStats := metrics.NewStats()
-		stats[workerID] = workerStats
+	workerCount := runner.Workers()
+	requestsPerWorker := runner.RequestsPerWorker()
 
-		exporter, err := factory.NewBatchExporter(ctx)
-		if err != nil {
-			return err
-		}
-		batchExporter := metrics.NewInstrumentedBatchExporter(exporter, workerStats)
-		defer batchExporter.Shutdown(ctx)
+	batchChannel := make(chan model.Batch, workerCount*2)
+	summaryChannel := make(chan exportResult, workerCount*4)
+	finalSummary := make(chan metrics.Summary, 1)
 
-		requests := runner.RequestsPerWorker()
-		start := time.Now()
-		for i := 0; ; i++ {
-			if requests > 0 && i >= requests {
-				break
-			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			default:
-			}
-			if requestDuration > 0 && time.Since(start) >= requestDuration {
-				break
-			}
-			batch, err := p.Process(ctx, nil)
-			if err != nil {
-				return err
-			}
-			if len(batch) > 0 {
-				if err := batchExporter.ExportBatch(ctx, model.Batch(batch)); err != nil {
+	group, groupCtx := errgroup.WithContext(ctx)
+
+	var producerWG sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		producerWG.Add(1)
+		group.Go(func() error {
+			defer producerWG.Done()
+			start := time.Now()
+			for request := 0; ; request++ {
+				if requestsPerWorker > 0 && request >= requestsPerWorker {
+					return nil
+				}
+				if requestDuration > 0 && time.Since(start) >= requestDuration {
+					return nil
+				}
+				select {
+				case <-groupCtx.Done():
+					return groupCtx.Err()
+				default:
+				}
+
+				batch, err := p.Process(groupCtx, nil)
+				if err != nil {
 					return err
 				}
-			}
-			if requestInterval > 0 {
-				if requests <= 0 || i < requests-1 {
+				if len(batch) > 0 {
 					select {
-					case <-ctx.Done():
-						return ctx.Err()
-					case <-time.After(requestInterval):
+					case <-groupCtx.Done():
+						return groupCtx.Err()
+					case batchChannel <- model.Batch(batch):
+					}
+				}
+
+				if requestInterval > 0 {
+					if requestsPerWorker <= 0 || request < requestsPerWorker-1 {
+						select {
+						case <-groupCtx.Done():
+							return groupCtx.Err()
+						case <-time.After(requestInterval):
+						}
 					}
 				}
 			}
-		}
+		})
+	}
+
+	group.Go(func() error {
+		producerWG.Wait()
+		close(batchChannel)
 		return nil
 	})
 
-	p.summary = metrics.Summarize(stats)
+	var exporterWG sync.WaitGroup
+	for i := 0; i < workerCount; i++ {
+		exporterWG.Add(1)
+		group.Go(func() error {
+			defer exporterWG.Done()
+			exporter, err := factory.NewBatchExporter(groupCtx)
+			if err != nil {
+				return err
+			}
+			defer exporter.Shutdown(groupCtx)
+
+			for {
+				select {
+				case <-groupCtx.Done():
+					return groupCtx.Err()
+				case batch, ok := <-batchChannel:
+					if !ok {
+						return nil
+					}
+					start := time.Now()
+					err := exporter.ExportBatch(groupCtx, batch)
+					result := exportResult{duration: time.Since(start), err: err}
+					select {
+					case <-groupCtx.Done():
+						return groupCtx.Err()
+					case summaryChannel <- result:
+					}
+					if err != nil {
+						return err
+					}
+				}
+			}
+		})
+	}
+
+	group.Go(func() error {
+		exporterWG.Wait()
+		close(summaryChannel)
+		return nil
+	})
+
+	group.Go(func() error {
+		stats := metrics.NewStats()
+		for result := range summaryChannel {
+			stats.Record(result.duration, result.err)
+		}
+		finalSummary <- stats.Summary()
+		close(finalSummary)
+		return nil
+	})
+
+	err := group.Wait()
+	if summary, ok := <-finalSummary; ok {
+		p.summary = summary
+	} else {
+		p.summary = metrics.Summary{}
+	}
+
 	return err
 }
 
