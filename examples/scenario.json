@@ -1,0 +1,54 @@
+{
+  "name": "post-service-graph",
+  "seed": 42,
+  "services": {
+    "frontend": {
+      "resource": {
+        "service.name": { "type": "string", "value": "frontend" },
+        "service.version": { "type": "string", "value": "2.10.0" }
+      }
+    },
+    "post": {
+      "resource": {
+        "service.name": { "type": "string", "value": "post-service" },
+        "service.version": { "type": "string", "value": "2.10.0" }
+      }
+    },
+    "db": {
+      "resource": {
+        "service.name": { "type": "string", "value": "postgres" }
+      }
+    }
+  },
+  "nodes": {
+    "a": { "service": "frontend", "span_name": "GET /posts" },
+    "b": { "service": "post", "span_name": "POST /posts" },
+    "c": { "service": "db", "span_name": "SELECT posts" }
+  },
+  "root": "a",
+  "edges": [
+    {
+      "from": "a",
+      "to": "b",
+      "kind": "client_server",
+      "repeat": 50,
+      "duration_ms": 120,
+      "span_attributes": {
+        "http.method": { "type": "string", "value": "POST" },
+        "http.route": { "type": "string", "value": "/posts" },
+        "http.response.status_code": { "type": "int", "value": 200 }
+      }
+    },
+    {
+      "from": "b",
+      "to": "c",
+      "kind": "client_database",
+      "repeat": 1,
+      "duration_ms": 20,
+      "span_attributes": {
+        "db.system": { "type": "string", "value": "postgresql" },
+        "db.name": { "type": "string", "value": "posts" }
+      }
+    }
+  ]
+}

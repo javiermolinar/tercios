@@ -252,35 +252,7 @@ func compileAction(action Action) (compiledAction, error) {
 }
 
 func compileTypedValue(value TypedValue) (attribute.Value, error) {
-	normalizedType := ValueType(strings.ToLower(strings.TrimSpace(string(value.Type))))
-	switch normalizedType {
-	case ValueTypeString:
-		s, ok := value.Value.(string)
-		if !ok {
-			return attribute.Value{}, fmt.Errorf("expected string value")
-		}
-		return attribute.StringValue(s), nil
-	case ValueTypeBool:
-		b, ok := value.Value.(bool)
-		if !ok {
-			return attribute.Value{}, fmt.Errorf("expected bool value")
-		}
-		return attribute.BoolValue(b), nil
-	case ValueTypeInt:
-		i, ok := toInt64(value.Value)
-		if !ok {
-			return attribute.Value{}, fmt.Errorf("expected int value")
-		}
-		return attribute.Int64Value(i), nil
-	case ValueTypeFloat:
-		f, ok := toFloat64(value.Value)
-		if !ok {
-			return attribute.Value{}, fmt.Errorf("expected float value")
-		}
-		return attribute.Float64Value(f), nil
-	default:
-		return attribute.Value{}, fmt.Errorf("unsupported value type %q", value.Type)
-	}
+	return value.ToAttributeValue()
 }
 
 func shouldApplyPolicy(probability float64, shouldApply ShouldApplyFunc) bool {
