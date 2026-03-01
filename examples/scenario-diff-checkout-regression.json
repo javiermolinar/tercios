@@ -1,0 +1,149 @@
+{
+  "name": "checkout-flow-regression",
+  "seed": 2027,
+  "services": {
+    "frontend": {
+      "resource": {
+        "service.name": { "type": "string", "value": "frontend" },
+        "service.version": { "type": "string", "value": "1.14.2" },
+        "deployment.ring": { "type": "string", "value": "stable" }
+      }
+    },
+    "checkout": {
+      "resource": {
+        "service.name": { "type": "string", "value": "checkout-service" },
+        "service.version": { "type": "string", "value": "3.2.0" },
+        "deployment.ring": { "type": "string", "value": "stable" }
+      }
+    },
+    "inventory": {
+      "resource": {
+        "service.name": { "type": "string", "value": "inventory-service" },
+        "service.version": { "type": "string", "value": "2.8.1" },
+        "deployment.ring": { "type": "string", "value": "stable" }
+      }
+    },
+    "payment": {
+      "resource": {
+        "service.name": { "type": "string", "value": "payment-service" },
+        "service.version": { "type": "string", "value": "2.8.1" },
+        "deployment.ring": { "type": "string", "value": "stable" }
+      }
+    },
+    "shipping": {
+      "resource": {
+        "service.name": { "type": "string", "value": "shipping-service" },
+        "service.version": { "type": "string", "value": "1.9.0" },
+        "deployment.ring": { "type": "string", "value": "stable" }
+      }
+    },
+    "worker": {
+      "resource": {
+        "service.name": { "type": "string", "value": "order-worker" },
+        "service.version": { "type": "string", "value": "0.42.0" },
+        "deployment.ring": { "type": "string", "value": "stable" }
+      }
+    },
+    "db": {
+      "resource": {
+        "service.name": { "type": "string", "value": "orders-postgres" },
+        "service.version": { "type": "string", "value": "14.12" }
+      }
+    }
+  },
+  "nodes": {
+    "a": { "service": "frontend", "span_name": "GET /checkout" },
+    "b": { "service": "checkout", "span_name": "POST /checkout" },
+    "c": { "service": "inventory", "span_name": "GET /inventory/reserve" },
+    "d": { "service": "payment", "span_name": "POST /payment/charge" },
+    "e": { "service": "shipping", "span_name": "POST /shipping/label" },
+    "f": { "service": "worker", "span_name": "Consume order.created" },
+    "g": { "service": "db", "span_name": "SQL orders" }
+  },
+  "root": "a",
+  "edges": [
+    {
+      "from": "a",
+      "to": "b",
+      "kind": "client_server",
+      "repeat": 1,
+      "duration_ms": 50,
+      "span_attributes": {
+        "http.method": { "type": "string", "value": "POST" },
+        "http.route": { "type": "string", "value": "/checkout" },
+        "http.response.status_code": { "type": "int", "value": 200 }
+      }
+    },
+    {
+      "from": "b",
+      "to": "c",
+      "kind": "client_server",
+      "repeat": 1,
+      "duration_ms": 20,
+      "span_attributes": {
+        "http.method": { "type": "string", "value": "GET" },
+        "http.route": { "type": "string", "value": "/inventory/reserve" },
+        "http.response.status_code": { "type": "int", "value": 200 }
+      }
+    },
+    {
+      "from": "b",
+      "to": "d",
+      "kind": "client_server",
+      "repeat": 1,
+      "duration_ms": 70,
+      "span_attributes": {
+        "http.method": { "type": "string", "value": "POST" },
+        "http.route": { "type": "string", "value": "/payment/charge" },
+        "http.response.status_code": { "type": "int", "value": 200 }
+      }
+    },
+    {
+      "from": "b",
+      "to": "e",
+      "kind": "client_server",
+      "repeat": 1,
+      "duration_ms": 25,
+      "span_attributes": {
+        "http.method": { "type": "string", "value": "POST" },
+        "http.route": { "type": "string", "value": "/shipping/label" },
+        "http.response.status_code": { "type": "int", "value": 200 }
+      }
+    },
+    {
+      "from": "b",
+      "to": "f",
+      "kind": "producer_consumer",
+      "repeat": 5,
+      "duration_ms": 10,
+      "span_attributes": {
+        "messaging.system": { "type": "string", "value": "kafka" },
+        "messaging.destination.name": { "type": "string", "value": "order.created" },
+        "messaging.operation": { "type": "string", "value": "process" },
+        "messaging.batch.message_count": { "type": "int", "value": 5 }
+      }
+    },
+    {
+      "from": "f",
+      "to": "g",
+      "kind": "client_database",
+      "repeat": 1,
+      "duration_ms": 30,
+      "span_attributes": {
+        "db.system": { "type": "string", "value": "postgresql" },
+        "db.name": { "type": "string", "value": "orders" }
+      }
+    },
+    {
+      "from": "d",
+      "to": "g",
+      "kind": "client_database",
+      "repeat": 1,
+      "duration_ms": 15,
+      "span_attributes": {
+        "db.system": { "type": "string", "value": "postgresql" },
+        "db.name": { "type": "string", "value": "orders" }
+      }
+    }
+  ]
+}

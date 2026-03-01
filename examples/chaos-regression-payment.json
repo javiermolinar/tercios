@@ -1,0 +1,51 @@
+{
+  "seed": 99,
+  "policy_mode": "all",
+  "policies": [
+    {
+      "name": "payment-canary-regression",
+      "probability": 1.0,
+      "match": {
+        "service_name": "payment-service"
+      },
+      "actions": [
+        {
+          "type": "set_attribute",
+          "scope": "resource",
+          "name": "service.version",
+          "value": {
+            "type": "string",
+            "value": "2.9.0-canary"
+          }
+        },
+        {
+          "type": "set_attribute",
+          "scope": "resource",
+          "name": "deployment.ring",
+          "value": {
+            "type": "string",
+            "value": "canary"
+          }
+        },
+        {
+          "type": "set_attribute",
+          "scope": "span",
+          "name": "http.response.status_code",
+          "value": {
+            "type": "int",
+            "value": 504
+          }
+        },
+        {
+          "type": "set_status",
+          "code": "error",
+          "message": "timeout after canary rollout"
+        },
+        {
+          "type": "add_latency",
+          "delta_ms": 900
+        }
+      ]
+    }
+  ]
+}

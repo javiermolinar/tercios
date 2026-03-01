@@ -151,6 +151,33 @@ Notes:
 
 ---
 
+## 5) Scenario example (representative)
+
+Representative scenario file:
+- `examples/scenario-diff-cache-after-travel.json`
+
+This scenario models a travel search flow with a cache layer in front of pricing data reads.
+
+Run locally (dry-run JSON):
+
+```bash
+go run ./cmd/tercios \
+  --scenario-file=./examples/scenario-diff-cache-after-travel.json \
+  --dry-run -o json \
+  --exporters=1 --max-requests=1 \
+  2>/dev/null
+```
+
+Send to Tempo:
+
+```bash
+go run ./cmd/tercios \
+  --scenario-file=./examples/scenario-diff-cache-after-travel.json \
+  --exporters=1 --max-requests=1
+```
+
+---
+
 ## CLI options (reference)
 
 - `--endpoint` OTLP endpoint (gRPC: `host:port`, HTTP: `http(s)://host:port/v1/traces`)
