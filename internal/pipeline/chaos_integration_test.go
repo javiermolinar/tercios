@@ -13,7 +13,6 @@ import (
 	"github.com/javiermolinar/tercios/internal/model"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -31,25 +30,25 @@ func (s fixedStage) process(_ context.Context, _ []model.Span) ([]model.Span, er
 
 type capturedExporterFactory struct {
 	mu    sync.Mutex
-	spans []sdktrace.ReadOnlySpan
+	spans []model.Span
 }
 
-func (f *capturedExporterFactory) NewExporter(_ context.Context) (sdktrace.SpanExporter, error) {
-	return &capturedExporter{factory: f}, nil
+func (f *capturedExporterFactory) NewBatchExporter(_ context.Context) (model.BatchExporter, error) {
+	return &capturedBatchExporter{factory: f}, nil
 }
 
-type capturedExporter struct {
+type capturedBatchExporter struct {
 	factory *capturedExporterFactory
 }
 
-func (e *capturedExporter) ExportSpans(_ context.Context, spans []sdktrace.ReadOnlySpan) error {
+func (e *capturedBatchExporter) ExportBatch(_ context.Context, batch model.Batch) error {
 	e.factory.mu.Lock()
 	defer e.factory.mu.Unlock()
-	e.factory.spans = append(e.factory.spans, spans...)
+	e.factory.spans = append(e.factory.spans, batch...)
 	return nil
 }
 
-func (e *capturedExporter) Shutdown(_ context.Context) error {
+func (e *capturedBatchExporter) Shutdown(_ context.Context) error {
 	return nil
 }
 
@@ -101,7 +100,7 @@ func TestPipelineAppliesExampleChaosPolicies(t *testing.T) {
 	}
 
 	factory.mu.Lock()
-	exported := append([]sdktrace.ReadOnlySpan{}, factory.spans...)
+	exported := append([]model.Span{}, factory.spans...)
 	factory.mu.Unlock()
 
 	if len(exported) == 0 {
@@ -109,10 +108,10 @@ func TestPipelineAppliesExampleChaosPolicies(t *testing.T) {
 	}
 
 	span := exported[0]
-	if span.Status().Code != codes.Error {
-		t.Fatalf("expected error status, got %s", span.Status().Code)
+	if span.StatusCode != codes.Error {
+		t.Fatalf("expected error status, got %s", span.StatusCode)
 	}
-	status := attributeValue(span.Attributes(), "http.response.status_code")
+	status := attributeValueFromMap(span.Attributes, "http.response.status_code")
 	if status != "500" {
 		t.Fatalf("expected http.response.status_code=500, got %s", status)
 	}
@@ -128,11 +127,9 @@ func loadExampleChaosConfig(t *testing.T) (chaos.Config, error) {
 	return chaos.LoadFromJSON(filepath.Join(root, "examples", "chaos-policies.json"))
 }
 
-func attributeValue(attributes []attribute.KeyValue, key string) string {
-	for _, kv := range attributes {
-		if string(kv.Key) == key {
-			return kv.Value.Emit()
-		}
+func attributeValueFromMap(attributes map[string]attribute.Value, key string) string {
+	if value, ok := attributes[key]; ok {
+		return value.Emit()
 	}
 	return ""
 }

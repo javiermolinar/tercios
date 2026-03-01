@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/javiermolinar/tercios/internal/model"
 	"go.opentelemetry.io/otel/attribute"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
@@ -49,6 +50,17 @@ func NewDryRunExporterFactory(output DryRunOutput, writer io.Writer) DryRunExpor
 	}
 }
 
+func (f DryRunExporterFactory) NewBatchExporter(_ context.Context) (model.BatchExporter, error) {
+	switch f.Output {
+	case DryRunOutputJSON:
+		return &jsonBatchExporter{writer: f.Writer, lock: f.lock}, nil
+	case DryRunOutputSummary:
+		fallthrough
+	default:
+		return noopBatchExporter{}, nil
+	}
+}
+
 func (f DryRunExporterFactory) NewExporter(_ context.Context) (sdktrace.SpanExporter, error) {
 	switch f.Output {
 	case DryRunOutputJSON:
@@ -60,6 +72,16 @@ func (f DryRunExporterFactory) NewExporter(_ context.Context) (sdktrace.SpanExpo
 	}
 }
 
+type noopBatchExporter struct{}
+
+func (noopBatchExporter) ExportBatch(_ context.Context, _ model.Batch) error {
+	return nil
+}
+
+func (noopBatchExporter) Shutdown(_ context.Context) error {
+	return nil
+}
+
 type noopExporter struct{}
 
 func (noopExporter) ExportSpans(_ context.Context, _ []sdktrace.ReadOnlySpan) error {
@@ -67,6 +89,28 @@ func (noopExporter) ExportSpans(_ context.Context, _ []sdktrace.ReadOnlySpan) er
 }
 
 func (noopExporter) Shutdown(_ context.Context) error {
+	return nil
+}
+
+type jsonBatchExporter struct {
+	writer io.Writer
+	lock   *sync.Mutex
+}
+
+func (e *jsonBatchExporter) ExportBatch(_ context.Context, batch model.Batch) error {
+	if len(batch) == 0 {
+		return nil
+	}
+
+	payload := jsonBatch{Spans: make([]jsonSpan, 0, len(batch))}
+	for _, span := range batch {
+		payload.Spans = append(payload.Spans, toJSONSpanFromModel(span))
+	}
+
+	return writeJSONBatch(e.writer, e.lock, payload)
+}
+
+func (e *jsonBatchExporter) Shutdown(_ context.Context) error {
 	return nil
 }
 
@@ -85,15 +129,19 @@ func (e *jsonExporter) ExportSpans(_ context.Context, spans []sdktrace.ReadOnlyS
 		payload.Spans = append(payload.Spans, toJSONSpan(span))
 	}
 
-	e.lock.Lock()
-	defer e.lock.Unlock()
-
-	encoder := json.NewEncoder(e.writer)
-	return encoder.Encode(payload)
+	return writeJSONBatch(e.writer, e.lock, payload)
 }
 
 func (e *jsonExporter) Shutdown(_ context.Context) error {
 	return nil
+}
+
+func writeJSONBatch(writer io.Writer, lock *sync.Mutex, payload jsonBatch) error {
+	lock.Lock()
+	defer lock.Unlock()
+
+	encoder := json.NewEncoder(writer)
+	return encoder.Encode(payload)
 }
 
 type jsonBatch struct {
@@ -127,7 +175,7 @@ func toJSONSpan(span sdktrace.ReadOnlySpan) jsonSpan {
 
 	resourceAttributes := map[string]any(nil)
 	if res := span.Resource(); res != nil {
-		resourceAttributes = attributesToMap(res.Attributes())
+		resourceAttributes = attributeSliceToMap(res.Attributes())
 	}
 
 	status := span.Status()
@@ -140,7 +188,7 @@ func toJSONSpan(span sdktrace.ReadOnlySpan) jsonSpan {
 		StartTime:    span.StartTime().UTC().Format("2006-01-02T15:04:05.000000000Z07:00"),
 		EndTime:      span.EndTime().UTC().Format("2006-01-02T15:04:05.000000000Z07:00"),
 		DurationMs:   span.EndTime().Sub(span.StartTime()).Milliseconds(),
-		Attributes:   attributesToMap(span.Attributes()),
+		Attributes:   attributeSliceToMap(span.Attributes()),
 		Resource:     resourceAttributes,
 		Status: jsonStatus{
 			Code:    status.Code.String(),
@@ -149,13 +197,48 @@ func toJSONSpan(span sdktrace.ReadOnlySpan) jsonSpan {
 	}
 }
 
-func attributesToMap(attributes []attribute.KeyValue) map[string]any {
+func toJSONSpanFromModel(span model.Span) jsonSpan {
+	parentSpanID := ""
+	if span.ParentSpanID.IsValid() {
+		parentSpanID = span.ParentSpanID.String()
+	}
+
+	return jsonSpan{
+		TraceID:      span.TraceID.String(),
+		SpanID:       span.SpanID.String(),
+		ParentSpanID: parentSpanID,
+		Name:         span.Name,
+		Kind:         span.Kind.String(),
+		StartTime:    span.StartTime.UTC().Format("2006-01-02T15:04:05.000000000Z07:00"),
+		EndTime:      span.EndTime.UTC().Format("2006-01-02T15:04:05.000000000Z07:00"),
+		DurationMs:   span.EndTime.Sub(span.StartTime).Milliseconds(),
+		Attributes:   attributeMapToAnyMap(span.Attributes),
+		Resource:     attributeMapToAnyMap(span.ResourceAttributes),
+		Status: jsonStatus{
+			Code:    span.StatusCode.String(),
+			Message: span.StatusDescription,
+		},
+	}
+}
+
+func attributeSliceToMap(attributes []attribute.KeyValue) map[string]any {
 	if len(attributes) == 0 {
 		return nil
 	}
 	out := make(map[string]any, len(attributes))
 	for _, kv := range attributes {
 		out[string(kv.Key)] = kv.Value.AsInterface()
+	}
+	return out
+}
+
+func attributeMapToAnyMap(attributes map[string]attribute.Value) map[string]any {
+	if len(attributes) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(attributes))
+	for key, value := range attributes {
+		out[key] = value.AsInterface()
 	}
 	return out
 }

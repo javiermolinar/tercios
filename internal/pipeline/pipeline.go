@@ -7,7 +7,6 @@ import (
 
 	"github.com/javiermolinar/tercios/internal/metrics"
 	"github.com/javiermolinar/tercios/internal/model"
-	"go.opentelemetry.io/otel/sdk/trace"
 )
 
 type BatchStage interface {
@@ -16,7 +15,7 @@ type BatchStage interface {
 }
 
 type ExporterFactory interface {
-	NewExporter(ctx context.Context) (trace.SpanExporter, error)
+	NewBatchExporter(ctx context.Context) (model.BatchExporter, error)
 }
 
 type Pipeline struct {
@@ -56,23 +55,12 @@ func (p *Pipeline) Run(ctx context.Context, runner *ConcurrencyRunner, factory E
 		workerStats := metrics.NewStats()
 		stats[workerID] = workerStats
 
-		var spanExporter trace.SpanExporter
-		var batchExporter model.BatchExporter
-		if batchFactory, ok := factory.(model.BatchExporterFactory); ok {
-			exporter, err := batchFactory.NewBatchExporter(ctx)
-			if err != nil {
-				return err
-			}
-			batchExporter = metrics.NewInstrumentedBatchExporter(exporter, workerStats)
-			defer batchExporter.Shutdown(ctx)
-		} else {
-			exporter, err := factory.NewExporter(ctx)
-			if err != nil {
-				return err
-			}
-			spanExporter = metrics.NewInstrumentedExporter(exporter, workerStats)
-			defer spanExporter.Shutdown(ctx)
+		exporter, err := factory.NewBatchExporter(ctx)
+		if err != nil {
+			return err
 		}
+		batchExporter := metrics.NewInstrumentedBatchExporter(exporter, workerStats)
+		defer batchExporter.Shutdown(ctx)
 
 		requests := runner.RequestsPerWorker()
 		start := time.Now()
@@ -93,18 +81,8 @@ func (p *Pipeline) Run(ctx context.Context, runner *ConcurrencyRunner, factory E
 				return err
 			}
 			if len(batch) > 0 {
-				if batchExporter != nil {
-					if err := batchExporter.ExportBatch(ctx, model.Batch(batch)); err != nil {
-						return err
-					}
-				} else {
-					readonlyBatch, err := model.Batch(batch).ToReadOnlySpans(ctx)
-					if err != nil {
-						return fmt.Errorf("convert model batch to readonly spans: %w", err)
-					}
-					if err := spanExporter.ExportSpans(ctx, readonlyBatch); err != nil {
-						return err
-					}
+				if err := batchExporter.ExportBatch(ctx, model.Batch(batch)); err != nil {
+					return err
 				}
 			}
 			if requestInterval > 0 {
