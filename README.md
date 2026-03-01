@@ -129,6 +129,28 @@ Policy JSON uses typed values:
 
 ---
 
+## 4) Scenario mode (deterministic topology)
+
+Use `--scenario-file` to generate deterministic traces from a scenario definition.
+
+Scenario example: `examples/scenario.json`
+
+```bash
+go run ./cmd/tercios \
+  --scenario-file=./examples/scenario.json \
+  --dry-run -o json \
+  --exporters=1 \
+  --max-requests=1 \
+  2>/dev/null
+```
+
+Notes:
+- Scenario mode replaces random topology generation.
+- Execution knobs still apply (`--exporters`, `--max-requests`, `--for`, `--request-interval`).
+- Chaos can be composed on top of scenarios with `--chaos-policies-file`.
+
+---
+
 ## CLI options (reference)
 
 - `--endpoint` OTLP endpoint (gRPC: `host:port`, HTTP: `http(s)://host:port/v1/traces`)
@@ -145,6 +167,7 @@ Policy JSON uses typed values:
 - `--error-rate` probability (`0..1`) of generated error spans
 - `--service-name` base service name
 - `--span-name` base span name
+- `--scenario-file` path to deterministic scenario JSON
 - `--chaos-policies-file` path to chaos policy JSON
 - `--chaos-seed` override policy seed (`0` uses config/default)
 - `--dry-run` do not export, generate locally

@@ -15,6 +15,7 @@ import (
 	"github.com/javiermolinar/tercios/internal/metrics"
 	"github.com/javiermolinar/tercios/internal/otlp"
 	"github.com/javiermolinar/tercios/internal/pipeline"
+	"github.com/javiermolinar/tercios/internal/scenario"
 	"github.com/javiermolinar/tercios/internal/tracegen"
 )
 
@@ -33,6 +34,7 @@ func main() {
 		errorRate              float64
 		serviceName            string
 		spanName               string
+		scenarioFile           string
 		chaosPoliciesFile      string
 		chaosSeed              int64
 		dryRun                 bool
@@ -54,6 +56,7 @@ func main() {
 	flag.Float64Var(&errorRate, "error-rate", defaults.Generator.ErrorRate, "probability (0..1) of spans marked as error")
 	flag.StringVar(&serviceName, "service-name", defaults.Generator.ServiceName, "service.name attribute for spans")
 	flag.StringVar(&spanName, "span-name", defaults.Generator.SpanName, "span name to emit")
+	flag.StringVar(&scenarioFile, "scenario-file", "", "path to scenario JSON file")
 	flag.StringVar(&chaosPoliciesFile, "chaos-policies-file", "", "path to chaos policies JSON file")
 	flag.Int64Var(&chaosSeed, "chaos-seed", 0, "override chaos policy seed (0 uses file/default)")
 	flag.BoolVar(&dryRun, "dry-run", false, "generate traces without exporting to OTLP")
@@ -115,18 +118,29 @@ func main() {
 		}
 	}
 
-	generator := tracegen.Generator{
-		ServiceName: cfg.Generator.ServiceName,
-		SpanName:    cfg.Generator.SpanName,
-		Services:    cfg.Generator.Services,
-		MaxDepth:    cfg.Generator.MaxDepth,
-		MaxSpans:    cfg.Generator.MaxSpans,
-		ErrorRate:   cfg.Generator.ErrorRate,
-	}
-
 	runner := pipeline.NewConcurrencyRunner(cfg.Concurrency.Exporters, cfg.Requests.PerExporter)
-	stages := []pipeline.BatchStage{
-		pipeline.NewGeneratorStage(&generator),
+	stages := make([]pipeline.BatchStage, 0, 2)
+	if scenarioFile != "" {
+		scenarioCfg, err := scenario.LoadFromJSON(scenarioFile)
+		if err != nil {
+			log.Fatalf("invalid scenario file: %v", err)
+		}
+		definition, err := scenarioCfg.Build()
+		if err != nil {
+			log.Fatalf("invalid scenario definition: %v", err)
+		}
+		scenarioGenerator := scenario.NewGenerator(definition)
+		stages = append(stages, pipeline.NewScenarioStage(scenarioGenerator))
+	} else {
+		generator := tracegen.Generator{
+			ServiceName: cfg.Generator.ServiceName,
+			SpanName:    cfg.Generator.SpanName,
+			Services:    cfg.Generator.Services,
+			MaxDepth:    cfg.Generator.MaxDepth,
+			MaxSpans:    cfg.Generator.MaxSpans,
+			ErrorRate:   cfg.Generator.ErrorRate,
+		}
+		stages = append(stages, pipeline.NewGeneratorStage(&generator))
 	}
 	if chaosPoliciesFile != "" {
 		chaosCfg, err := chaos.LoadFromJSON(chaosPoliciesFile)
