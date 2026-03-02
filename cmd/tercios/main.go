@@ -71,6 +71,17 @@ func main() {
 		fmt.Fprintln(os.Stderr, "error: no arguments provided; use --dry-run to generate locally or -h for help")
 		os.Exit(2)
 	}
+	setFlags := map[string]struct{}{}
+	flag.Visit(func(f *flag.Flag) {
+		setFlags[f.Name] = struct{}{}
+	})
+	isFlagSet := func(name string) bool {
+		_, ok := setFlags[name]
+		return ok
+	}
+	if err := applyOTLPEnvOverrides(&endpoint, &protocol, &insecure, isFlagSet); err != nil {
+		log.Fatalf("invalid OTLP environment override: %v", err)
+	}
 
 	requestInterval := time.Duration(requestIntervalSeconds * float64(time.Second))
 	requestFor := time.Duration(requestForSeconds * float64(time.Second))

@@ -29,6 +29,24 @@ If you want to see the generated spans as JSON:
 go run ./cmd/tercios --dry-run -o json 2>/dev/null
 ```
 
+If you want to send traces to a local OpenTelemetry Collector with environment variables instead of flags:
+
+```bash
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=localhost:4317
+export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=grpc
+export OTEL_EXPORTER_OTLP_TRACES_INSECURE=true
+
+go run ./cmd/tercios \
+  --scenario-file=./examples/scenario-diff-checkout-baseline.json \
+  --exporters=1 \
+  --max-requests=1
+```
+
+Notes:
+- `OTEL_EXPORTER_OTLP_TRACES_*` takes precedence over `OTEL_EXPORTER_OTLP_*`.
+- CLI flags still take precedence over environment variables.
+- `localhost:4317` is the common OTLP gRPC endpoint for an OTEL Collector.
+
 ---
 
 ## 2) Stress testing an OpenTelemetry Collector
