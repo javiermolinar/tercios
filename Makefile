@@ -1,9 +1,12 @@
 GOLANGCI_LINT_VERSION ?= v1.55.2
+BINARY_NAME ?= tercios
+BIN_DIR ?= bin
 
 .PHONY: build test lint vendor tidy run
 
 build:
-	go build ./cmd/tercios
+	mkdir -p $(BIN_DIR)
+	go build -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/tercios
 
 test:
 	go test ./...

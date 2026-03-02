@@ -67,6 +67,11 @@ func main() {
 	flag.StringVar(&output, "o", string(otlp.DryRunOutputSummary), "output format shorthand: summary or json")
 	flag.Var(&headers, "header", "Header in Key=Value or Key: Value format; repeatable")
 	flag.Parse()
+	if flag.NFlag() == 0 {
+		fmt.Fprintln(os.Stderr, "error: no arguments provided; use --dry-run to generate locally or -h for help")
+		os.Exit(2)
+	}
+
 	requestInterval := time.Duration(requestIntervalSeconds * float64(time.Second))
 	requestFor := time.Duration(requestForSeconds * float64(time.Second))
 	cfg := config.Config{
