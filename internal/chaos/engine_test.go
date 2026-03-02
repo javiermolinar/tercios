@@ -1,6 +1,8 @@
 package chaos
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -208,6 +210,38 @@ func TestNewSeededShouldApplyRespectsBounds(t *testing.T) {
 	}
 	if !shouldApply(1) {
 		t.Fatalf("expected probability 1 to be true")
+	}
+}
+
+func TestNewSeededShouldApplyConcurrentUse(t *testing.T) {
+	shouldApply := NewSeededShouldApply(42)
+
+	var trueCount atomic.Int64
+	var falseCount atomic.Int64
+	const goroutines = 8
+	const iterationsPerGoroutine = 2000
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < iterationsPerGoroutine; j++ {
+				if shouldApply(0.5) {
+					trueCount.Add(1)
+				} else {
+					falseCount.Add(1)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	if trueCount.Load() == 0 {
+		t.Fatalf("expected some true outcomes")
+	}
+	if falseCount.Load() == 0 {
+		t.Fatalf("expected some false outcomes")
 	}
 }
 

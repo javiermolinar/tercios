@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"github.com/javiermolinar/tercios/internal/chaos"
 	"github.com/javiermolinar/tercios/internal/model"
@@ -12,7 +11,6 @@ import (
 type chaosStage struct {
 	engine      *chaos.Engine
 	shouldApply chaos.ShouldApplyFunc
-	mu          sync.Mutex
 }
 
 func NewChaosStage(engine *chaos.Engine, shouldApply chaos.ShouldApplyFunc) BatchStage {
@@ -27,14 +25,5 @@ func (s *chaosStage) process(_ context.Context, spans []model.Span) ([]model.Spa
 	if s == nil || s.engine == nil {
 		return nil, fmt.Errorf("chaos engine not configured")
 	}
-	return s.engine.Apply(spans, s.threadSafeShouldApply), nil
-}
-
-func (s *chaosStage) threadSafeShouldApply(probability float64) bool {
-	if s == nil || s.shouldApply == nil {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.shouldApply(probability)
+	return s.engine.Apply(spans, s.shouldApply), nil
 }

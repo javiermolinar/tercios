@@ -3,8 +3,8 @@ package chaos
 import (
 	"fmt"
 	"maps"
-	"math/rand"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/javiermolinar/tercios/internal/model"
@@ -76,24 +76,41 @@ func NewEngine(cfg Config) (*Engine, error) {
 	}, nil
 }
 
-// NewSeededShouldApply returns a probability decider backed by a seeded RNG.
+// NewSeededShouldApply returns a probability decider backed by a seeded PRNG.
 //
-// The returned function is not safe for concurrent use. Create one decider per
-// worker/goroutine when applying policies in parallel.
+// The returned function is safe for concurrent use.
 func NewSeededShouldApply(seed int64) ShouldApplyFunc {
 	if seed == 0 {
 		seed = time.Now().UnixNano()
 	}
-	rng := rand.New(rand.NewSource(seed))
-	return func(probability float64) bool {
-		if probability <= 0 {
-			return false
-		}
-		if probability >= 1 {
-			return true
-		}
-		return rng.Float64() < probability
+	decider := &seededDecider{seed: uint64(seed)}
+	return decider.ShouldApply
+}
+
+type seededDecider struct {
+	seed    uint64
+	counter atomic.Uint64
+}
+
+func (d *seededDecider) ShouldApply(probability float64) bool {
+	if probability <= 0 {
+		return false
 	}
+	if probability >= 1 {
+		return true
+	}
+
+	sequence := d.counter.Add(1)
+	random := splitmix64(d.seed ^ sequence)
+	unit := float64(random>>11) * (1.0 / (1 << 53))
+	return unit < probability
+}
+
+func splitmix64(x uint64) uint64 {
+	x += 0x9e3779b97f4a7c15
+	x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9
+	x = (x ^ (x >> 27)) * 0x94d049bb133111eb
+	return x ^ (x >> 31)
 }
 
 func (e *Engine) Apply(spans []Span, shouldApply ShouldApplyFunc) []Span {
