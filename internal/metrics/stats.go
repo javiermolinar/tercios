@@ -18,21 +18,40 @@ import (
 const maxFailureSamplesPerClass = 3
 
 type Stats struct {
-	durations        []time.Duration
-	successes        int
-	failures         int
-	failureBreakdown map[string]int
-	failureSamples   map[string][]string
+	durations            []time.Duration
+	successes            int
+	failures             int
+	failureBreakdown     map[string]int
+	failureSamples       map[string][]string
+	traceIDSampleLimit   int
+	traceIDSamples       []string
+	failedTraceIDSamples []string
+	seenTraceIDs         map[string]struct{}
+	seenFailedTraceIDs   map[string]struct{}
 }
 
 func NewStats() *Stats {
+	return NewStatsWithTraceIDSampleLimit(0)
+}
+
+func NewStatsWithTraceIDSampleLimit(limit int) *Stats {
+	if limit < 0 {
+		limit = 0
+	}
 	return &Stats{
-		failureBreakdown: make(map[string]int),
-		failureSamples:   make(map[string][]string),
+		failureBreakdown:   make(map[string]int),
+		failureSamples:     make(map[string][]string),
+		traceIDSampleLimit: limit,
+		seenTraceIDs:       make(map[string]struct{}),
+		seenFailedTraceIDs: make(map[string]struct{}),
 	}
 }
 
 func (s *Stats) Record(duration time.Duration, err error) {
+	s.RecordWithTraceIDs(duration, err, nil)
+}
+
+func (s *Stats) RecordWithTraceIDs(duration time.Duration, err error, traceIDs []string) {
 	s.durations = append(s.durations, duration)
 	if err != nil {
 		s.failures++
@@ -42,6 +61,7 @@ func (s *Stats) Record(duration time.Duration, err error) {
 	} else {
 		s.successes++
 	}
+	s.recordTraceIDSamples(traceIDs, err != nil)
 }
 
 func (s *Stats) recordFailureSample(class string, err error) {
@@ -67,25 +87,59 @@ func (s *Stats) recordFailureSample(class string, err error) {
 	s.failureSamples[class] = append(samples, normalized)
 }
 
+func (s *Stats) recordTraceIDSamples(traceIDs []string, failed bool) {
+	if s.traceIDSampleLimit <= 0 || len(traceIDs) == 0 {
+		return
+	}
+	if s.seenTraceIDs == nil {
+		s.seenTraceIDs = make(map[string]struct{})
+	}
+	if s.seenFailedTraceIDs == nil {
+		s.seenFailedTraceIDs = make(map[string]struct{})
+	}
+	for _, traceID := range traceIDs {
+		traceID = strings.TrimSpace(traceID)
+		if traceID == "" {
+			continue
+		}
+		if len(s.traceIDSamples) < s.traceIDSampleLimit {
+			if _, exists := s.seenTraceIDs[traceID]; !exists {
+				s.seenTraceIDs[traceID] = struct{}{}
+				s.traceIDSamples = append(s.traceIDSamples, traceID)
+			}
+		}
+		if failed && len(s.failedTraceIDSamples) < s.traceIDSampleLimit {
+			if _, exists := s.seenFailedTraceIDs[traceID]; !exists {
+				s.seenFailedTraceIDs[traceID] = struct{}{}
+				s.failedTraceIDSamples = append(s.failedTraceIDSamples, traceID)
+			}
+		}
+	}
+}
+
 type Summary struct {
-	Total            int
-	Successes        int
-	Failures         int
-	AvgLatency       time.Duration
-	P95Latency       time.Duration
-	FailureBreakdown map[string]int
-	FailureSamples   map[string][]string
+	Total                int
+	Successes            int
+	Failures             int
+	AvgLatency           time.Duration
+	P95Latency           time.Duration
+	FailureBreakdown     map[string]int
+	FailureSamples       map[string][]string
+	TraceIDSamples       []string
+	FailedTraceIDSamples []string
 }
 
 func (s *Stats) Summary() Summary {
 	total := len(s.durations)
 	if total == 0 {
 		return Summary{
-			Total:            0,
-			Successes:        s.successes,
-			Failures:         s.failures,
-			FailureBreakdown: cloneBreakdown(s.failureBreakdown),
-			FailureSamples:   cloneSamples(s.failureSamples),
+			Total:                0,
+			Successes:            s.successes,
+			Failures:             s.failures,
+			FailureBreakdown:     cloneBreakdown(s.failureBreakdown),
+			FailureSamples:       cloneSamples(s.failureSamples),
+			TraceIDSamples:       cloneStrings(s.traceIDSamples),
+			FailedTraceIDSamples: cloneStrings(s.failedTraceIDSamples),
 		}
 	}
 
@@ -102,13 +156,15 @@ func (s *Stats) Summary() Summary {
 	p95 := durations[p95Index]
 
 	return Summary{
-		Total:            total,
-		Successes:        s.successes,
-		Failures:         s.failures,
-		AvgLatency:       avg,
-		P95Latency:       p95,
-		FailureBreakdown: cloneBreakdown(s.failureBreakdown),
-		FailureSamples:   cloneSamples(s.failureSamples),
+		Total:                total,
+		Successes:            s.successes,
+		Failures:             s.failures,
+		AvgLatency:           avg,
+		P95Latency:           p95,
+		FailureBreakdown:     cloneBreakdown(s.failureBreakdown),
+		FailureSamples:       cloneSamples(s.failureSamples),
+		TraceIDSamples:       cloneStrings(s.traceIDSamples),
+		FailedTraceIDSamples: cloneStrings(s.failedTraceIDSamples),
 	}
 }
 
@@ -118,6 +174,9 @@ func Summarize(stats []*Stats) Summary {
 	var failures int
 	failureBreakdown := make(map[string]int)
 	failureSamples := make(map[string][]string)
+	traceIDLimit := 0
+	traceIDSamples := make([]string, 0)
+	failedTraceIDSamples := make([]string, 0)
 
 	for _, stat := range stats {
 		if stat == nil {
@@ -128,15 +187,27 @@ func Summarize(stats []*Stats) Summary {
 		failures += stat.failures
 		mergeBreakdown(failureBreakdown, stat.failureBreakdown)
 		mergeSamples(failureSamples, stat.failureSamples)
+		if stat.traceIDSampleLimit > traceIDLimit {
+			traceIDLimit = stat.traceIDSampleLimit
+		}
+	}
+	for _, stat := range stats {
+		if stat == nil {
+			continue
+		}
+		traceIDSamples = mergeStringSamples(traceIDSamples, stat.traceIDSamples, traceIDLimit)
+		failedTraceIDSamples = mergeStringSamples(failedTraceIDSamples, stat.failedTraceIDSamples, traceIDLimit)
 	}
 
 	if total == 0 {
 		return Summary{
-			Total:            0,
-			Successes:        successes,
-			Failures:         failures,
-			FailureBreakdown: failureBreakdown,
-			FailureSamples:   failureSamples,
+			Total:                0,
+			Successes:            successes,
+			Failures:             failures,
+			FailureBreakdown:     failureBreakdown,
+			FailureSamples:       failureSamples,
+			TraceIDSamples:       traceIDSamples,
+			FailedTraceIDSamples: failedTraceIDSamples,
 		}
 	}
 
@@ -158,13 +229,15 @@ func Summarize(stats []*Stats) Summary {
 	p95 := durations[p95Index]
 
 	return Summary{
-		Total:            total,
-		Successes:        successes,
-		Failures:         failures,
-		AvgLatency:       avg,
-		P95Latency:       p95,
-		FailureBreakdown: failureBreakdown,
-		FailureSamples:   failureSamples,
+		Total:                total,
+		Successes:            successes,
+		Failures:             failures,
+		AvgLatency:           avg,
+		P95Latency:           p95,
+		FailureBreakdown:     failureBreakdown,
+		FailureSamples:       failureSamples,
+		TraceIDSamples:       traceIDSamples,
+		FailedTraceIDSamples: failedTraceIDSamples,
 	}
 }
 
@@ -238,6 +311,19 @@ func FormatSummary(summary Summary) string {
 		}
 	}
 
+	if len(summary.TraceIDSamples) > 0 {
+		lines = append(lines, fmt.Sprintf("Trace ID samples (%d):", len(summary.TraceIDSamples)))
+		for _, traceID := range summary.TraceIDSamples {
+			lines = append(lines, fmt.Sprintf("  - %s", traceID))
+		}
+	}
+	if len(summary.FailedTraceIDSamples) > 0 {
+		lines = append(lines, fmt.Sprintf("Failed trace ID samples (%d):", len(summary.FailedTraceIDSamples)))
+		for _, traceID := range summary.FailedTraceIDSamples {
+			lines = append(lines, fmt.Sprintf("  - %s", traceID))
+		}
+	}
+
 	return strings.Join(lines, "\n")
 }
 
@@ -297,6 +383,13 @@ func cloneSamples(in map[string][]string) map[string][]string {
 	return out
 }
 
+func cloneStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	return append([]string(nil), in...)
+}
+
 func mergeBreakdown(dst map[string]int, src map[string]int) {
 	for key, value := range src {
 		dst[key] += value
@@ -321,6 +414,25 @@ func mergeSamples(dst map[string][]string, src map[string][]string) {
 			}
 		}
 	}
+}
+
+func mergeStringSamples(dst []string, src []string, limit int) []string {
+	for _, sample := range src {
+		if limit > 0 && len(dst) >= limit {
+			break
+		}
+		exists := false
+		for _, existing := range dst {
+			if existing == sample {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			dst = append(dst, sample)
+		}
+	}
+	return dst
 }
 
 func normalizeErrorMessage(message string) string {

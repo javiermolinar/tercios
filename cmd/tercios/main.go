@@ -41,6 +41,8 @@ func main() {
 		chaosSeed              int64
 		dryRun                 bool
 		output                 string
+		summaryTraceIDs        bool
+		summaryTraceIDsLimit   int
 		headers                config.HeaderFlags
 	)
 
@@ -67,6 +69,8 @@ func main() {
 	flag.BoolVar(&dryRun, "dry-run", false, "generate traces without exporting to OTLP")
 	flag.StringVar(&output, "output", string(otlp.DryRunOutputSummary), "output format: summary or json")
 	flag.StringVar(&output, "o", string(otlp.DryRunOutputSummary), "output format shorthand: summary or json")
+	flag.BoolVar(&summaryTraceIDs, "summary-trace-ids", false, "include sampled trace IDs in summary output")
+	flag.IntVar(&summaryTraceIDsLimit, "summary-trace-ids-limit", 10, "maximum number of sampled trace IDs to include in summary")
 	flag.Var(&headers, "header", "Header in Key=Value or Key: Value format; repeatable")
 	flag.Parse()
 	if flag.NFlag() == 0 {
@@ -115,6 +119,12 @@ func main() {
 	}
 	if err := cfg.Validate(); err != nil {
 		log.Fatalf("invalid config: %v", err)
+	}
+	if summaryTraceIDsLimit < 0 {
+		log.Fatalf("invalid summary config: --summary-trace-ids-limit must be >= 0")
+	}
+	if summaryTraceIDs && summaryTraceIDsLimit == 0 {
+		log.Fatalf("invalid summary config: --summary-trace-ids requires --summary-trace-ids-limit > 0")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -188,7 +198,11 @@ func main() {
 	}
 
 	pipe := pipeline.New(stages...)
-	err = pipe.Run(ctx, runner, factory, cfg.Requests.Interval.Duration, cfg.Requests.For.Duration, cfg.Requests.ExportTimeout.Duration)
+	traceIDSampleLimit := 0
+	if summaryTraceIDs {
+		traceIDSampleLimit = summaryTraceIDsLimit
+	}
+	err = pipe.Run(ctx, runner, factory, cfg.Requests.Interval.Duration, cfg.Requests.For.Duration, cfg.Requests.ExportTimeout.Duration, traceIDSampleLimit)
 	summary := metrics.FormatSummary(pipe.Summary())
 	if dryRun && outputFormat == otlp.DryRunOutputJSON {
 		fmt.Fprintln(os.Stderr, summary)

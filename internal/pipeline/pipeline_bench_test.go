@@ -55,7 +55,7 @@ func BenchmarkPipelineRun(b *testing.B) {
 				b.ReportAllocs()
 				b.ResetTimer()
 				for i := 0; i < b.N; i++ {
-					if err := pipeline.Run(context.Background(), runner, factory, 0, 0, 0); err != nil {
+					if err := pipeline.Run(context.Background(), runner, factory, 0, 0, 0, 0); err != nil {
 						b.Fatalf("Run() error = %v", err)
 					}
 				}

@@ -59,3 +59,38 @@ func TestFormatSummaryPrintsFailureBreakdown(t *testing.T) {
 		t.Fatalf("expected timeout sample line, got %q", formatted)
 	}
 }
+
+func TestStatsCollectsTraceIDSamples(t *testing.T) {
+	stats := NewStatsWithTraceIDSampleLimit(2)
+	stats.RecordWithTraceIDs(5*time.Millisecond, nil, []string{"trace-1", "trace-2", "trace-1", "trace-3"})
+	stats.RecordWithTraceIDs(6*time.Millisecond, errors.New("boom"), []string{"trace-2", "trace-4"})
+
+	summary := stats.Summary()
+	if got := len(summary.TraceIDSamples); got != 2 {
+		t.Fatalf("expected trace id sample limit to apply, got %d", got)
+	}
+	if got := len(summary.FailedTraceIDSamples); got != 2 {
+		t.Fatalf("expected failed trace id sample limit to apply, got %d", got)
+	}
+	if summary.FailedTraceIDSamples[0] != "trace-2" {
+		t.Fatalf("expected first failed trace id sample to be trace-2, got %q", summary.FailedTraceIDSamples[0])
+	}
+}
+
+func TestFormatSummaryPrintsTraceIDSamples(t *testing.T) {
+	summary := Summary{
+		Total:                2,
+		Successes:            1,
+		Failures:             1,
+		TraceIDSamples:       []string{"trace-1", "trace-2"},
+		FailedTraceIDSamples: []string{"trace-2"},
+	}
+
+	formatted := FormatSummary(summary)
+	if !strings.Contains(formatted, "Trace ID samples (2):") {
+		t.Fatalf("expected trace id samples section, got %q", formatted)
+	}
+	if !strings.Contains(formatted, "Failed trace ID samples (1):") {
+		t.Fatalf("expected failed trace id samples section, got %q", formatted)
+	}
+}

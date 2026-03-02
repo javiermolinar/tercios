@@ -47,9 +47,10 @@ func (p *Pipeline) Process(ctx context.Context, spans []model.Span) ([]model.Spa
 type exportResult struct {
 	duration time.Duration
 	err      error
+	traceIDs []string
 }
 
-func (p *Pipeline) Run(ctx context.Context, runner *ConcurrencyRunner, factory ExporterFactory, requestInterval time.Duration, requestDuration time.Duration, exportTimeout time.Duration) error {
+func (p *Pipeline) Run(ctx context.Context, runner *ConcurrencyRunner, factory ExporterFactory, requestInterval time.Duration, requestDuration time.Duration, exportTimeout time.Duration, traceIDSampleLimit int) error {
 	if runner == nil {
 		return fmt.Errorf("concurrency runner not configured")
 	}
@@ -145,13 +146,14 @@ func (p *Pipeline) Run(ctx context.Context, runner *ConcurrencyRunner, factory E
 					if exportTimeout > 0 {
 						exportCtx, cancel = context.WithTimeout(groupCtx, exportTimeout)
 					}
+					traceIDs := sampleTraceIDs(batch, traceIDSampleLimit)
 					start := time.Now()
 					err := exporter.ExportBatch(exportCtx, batch)
 					cancel()
 					if err != nil {
 						err = fmt.Errorf("export worker=%d: %w", workerID, err)
 					}
-					result := exportResult{duration: time.Since(start), err: err}
+					result := exportResult{duration: time.Since(start), err: err, traceIDs: traceIDs}
 					select {
 					case <-groupCtx.Done():
 						return groupCtx.Err()
@@ -172,9 +174,9 @@ func (p *Pipeline) Run(ctx context.Context, runner *ConcurrencyRunner, factory E
 	})
 
 	group.Go(func() error {
-		stats := metrics.NewStats()
+		stats := metrics.NewStatsWithTraceIDSampleLimit(traceIDSampleLimit)
 		for result := range summaryChannel {
-			stats.Record(result.duration, result.err)
+			stats.RecordWithTraceIDs(result.duration, result.err, result.traceIDs)
 		}
 		finalSummary <- stats.Summary()
 		close(finalSummary)
@@ -196,4 +198,24 @@ func (p *Pipeline) Summary() metrics.Summary {
 		return metrics.Summary{}
 	}
 	return p.summary
+}
+
+func sampleTraceIDs(batch model.Batch, limit int) []string {
+	if limit <= 0 || len(batch) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(batch))
+	traceIDs := make([]string, 0, limit)
+	for _, span := range batch {
+		traceID := span.TraceID.String()
+		if _, exists := seen[traceID]; exists {
+			continue
+		}
+		seen[traceID] = struct{}{}
+		traceIDs = append(traceIDs, traceID)
+		if len(traceIDs) >= limit {
+			break
+		}
+	}
+	return traceIDs
 }

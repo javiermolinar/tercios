@@ -236,6 +236,8 @@ go run ./cmd/tercios \
 - `--chaos-seed` override policy seed (`0` uses config/default)
 - `--dry-run` do not export, generate locally
 - `-o, --output` `summary` or `json` (json requires `--dry-run`)
+- `--summary-trace-ids` include sampled trace IDs in summary output
+- `--summary-trace-ids-limit` maximum sampled trace IDs in summary output
 
 ---
 

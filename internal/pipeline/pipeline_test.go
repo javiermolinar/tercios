@@ -24,7 +24,7 @@ func TestPipelineRunsWithConcurrencyAndGenerator(t *testing.T) {
 	pipe := New(NewGeneratorStage(generator))
 	factory := testBatchExporterFactory{calls: &calls, spans: &spans}
 
-	if err := pipe.Run(context.Background(), runner, factory, 0, 0, 0); err != nil {
+	if err := pipe.Run(context.Background(), runner, factory, 0, 0, 0, 0); err != nil {
 		t.Fatalf("pipeline run error: %v", err)
 	}
 
@@ -59,6 +59,23 @@ func (fixedModelStage) process(_ context.Context, _ []model.Span) ([]model.Span,
 	}}, nil
 }
 
+type traceSampleStage struct{}
+
+func (traceSampleStage) name() string {
+	return "trace-samples"
+}
+
+func (traceSampleStage) process(_ context.Context, _ []model.Span) ([]model.Span, error) {
+	start := time.Date(2026, time.January, 27, 12, 0, 0, 0, time.UTC)
+	traceA := oteltrace.TraceID{0x0a}
+	traceB := oteltrace.TraceID{0x0b}
+	return []model.Span{
+		{TraceID: traceA, SpanID: oteltrace.SpanID{0x01}, Name: "a1", Kind: oteltrace.SpanKindInternal, StartTime: start, EndTime: start.Add(1 * time.Millisecond), StatusCode: codes.Ok},
+		{TraceID: traceA, SpanID: oteltrace.SpanID{0x02}, Name: "a2", Kind: oteltrace.SpanKindInternal, StartTime: start, EndTime: start.Add(1 * time.Millisecond), StatusCode: codes.Ok},
+		{TraceID: traceB, SpanID: oteltrace.SpanID{0x03}, Name: "b1", Kind: oteltrace.SpanKindInternal, StartTime: start, EndTime: start.Add(1 * time.Millisecond), StatusCode: codes.Ok},
+	}, nil
+}
+
 type testBatchExporterFactory struct {
 	calls *int64
 	spans *int64
@@ -80,6 +97,22 @@ func (e *countingBatchExporter) ExportBatch(_ context.Context, batch model.Batch
 }
 
 func (e *countingBatchExporter) Shutdown(_ context.Context) error {
+	return nil
+}
+
+type noopBatchExporterFactory struct{}
+
+func (noopBatchExporterFactory) NewBatchExporter(_ context.Context) (model.BatchExporter, error) {
+	return noopBatchExporter{}, nil
+}
+
+type noopBatchExporter struct{}
+
+func (noopBatchExporter) ExportBatch(_ context.Context, _ model.Batch) error {
+	return nil
+}
+
+func (noopBatchExporter) Shutdown(_ context.Context) error {
 	return nil
 }
 
@@ -107,7 +140,7 @@ func TestPipelineUsesModelBatchExporterWhenAvailable(t *testing.T) {
 	pipe := New(fixedModelStage{})
 	factory := testBatchExporterFactory{calls: &calls, spans: &spans}
 
-	if err := pipe.Run(context.Background(), runner, factory, 0, 0, 0); err != nil {
+	if err := pipe.Run(context.Background(), runner, factory, 0, 0, 0, 0); err != nil {
 		t.Fatalf("pipeline run error: %v", err)
 	}
 
@@ -119,12 +152,30 @@ func TestPipelineUsesModelBatchExporterWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestPipelineCollectsTraceIDSamplesWhenEnabled(t *testing.T) {
+	runner := NewConcurrencyRunner(1, 1)
+	pipe := New(traceSampleStage{})
+	factory := noopBatchExporterFactory{}
+
+	if err := pipe.Run(context.Background(), runner, factory, 0, 0, 0, 1); err != nil {
+		t.Fatalf("pipeline run error: %v", err)
+	}
+
+	summary := pipe.Summary()
+	if got := len(summary.TraceIDSamples); got != 1 {
+		t.Fatalf("expected 1 trace id sample due to limit, got %d", got)
+	}
+	if summary.TraceIDSamples[0] == "" {
+		t.Fatalf("expected non-empty trace id sample")
+	}
+}
+
 func TestPipelineAppliesPerExportTimeout(t *testing.T) {
 	runner := NewConcurrencyRunner(1, 1)
 	pipe := New(fixedModelStage{})
 	factory := blockingBatchExporterFactory{}
 
-	err := pipe.Run(context.Background(), runner, factory, 0, 0, 10*time.Millisecond)
+	err := pipe.Run(context.Background(), runner, factory, 0, 0, 10*time.Millisecond, 0)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected deadline exceeded, got %v", err)
 	}
@@ -143,7 +194,7 @@ func TestPipelineUnlimitedRequestsStopsOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 
-	err := pipe.Run(ctx, runner, factory, 0, 0, 0)
+	err := pipe.Run(ctx, runner, factory, 0, 0, 0, 0)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected deadline exceeded, got %v", err)
 	}

@@ -95,7 +95,7 @@ func TestPipelineAppliesExampleChaosPolicies(t *testing.T) {
 		NewChaosStage(engine, chaos.NewSeededShouldApply(cfg.Seed)),
 	)
 
-	if err := pipe.Run(context.Background(), runner, factory, 0, 0, 0); err != nil {
+	if err := pipe.Run(context.Background(), runner, factory, 0, 0, 0, 0); err != nil {
 		t.Fatalf("pipeline run error: %v", err)
 	}
 
