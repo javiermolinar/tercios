@@ -14,6 +14,16 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/sdk/trace"
+	"google.golang.org/grpc/credentials"
+)
+
+const (
+	envOTLPCertificate             = "OTEL_EXPORTER_OTLP_CERTIFICATE"
+	envOTLPTracesCertificate       = "OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE"
+	envOTLPClientCertificate       = "OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE"
+	envOTLPClientKey               = "OTEL_EXPORTER_OTLP_CLIENT_KEY"
+	envOTLPTracesClientCertificate = "OTEL_EXPORTER_OTLP_TRACES_CLIENT_CERTIFICATE"
+	envOTLPTracesClientKey         = "OTEL_EXPORTER_OTLP_TRACES_CLIENT_KEY"
 )
 
 type ExporterFactory struct {
@@ -27,21 +37,107 @@ type ExporterFactory struct {
 }
 
 func (f ExporterFactory) tlsConfig() (*tls.Config, error) {
-	if f.TLSSkipVerify {
-		return &tls.Config{InsecureSkipVerify: true}, nil //nolint:gosec
-	}
+	return mergedTLSConfig(f, os.LookupEnv, os.ReadFile)
+}
+
+func mergedTLSConfig(
+	f ExporterFactory,
+	lookupEnv func(string) (string, bool),
+	readFile func(string) ([]byte, error),
+) (*tls.Config, error) {
+	cfg := &tls.Config{}
+
+	applyCertPoolFromEnv(cfg, lookupEnv, readFile, envOTLPCertificate)
+	applyCertPoolFromEnv(cfg, lookupEnv, readFile, envOTLPTracesCertificate)
+	applyClientCertificateFromEnv(cfg, lookupEnv, readFile, envOTLPClientCertificate, envOTLPClientKey)
+	applyClientCertificateFromEnv(cfg, lookupEnv, readFile, envOTLPTracesClientCertificate, envOTLPTracesClientKey)
+
 	if f.TLSCACert != "" {
-		pem, err := os.ReadFile(f.TLSCACert)
+		pool, err := loadCertPool(f.TLSCACert, readFile)
 		if err != nil {
 			return nil, fmt.Errorf("read TLS CA cert %q: %w", f.TLSCACert, err)
 		}
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(pem) {
-			return nil, fmt.Errorf("no valid PEM certificates found in %q", f.TLSCACert)
-		}
-		return &tls.Config{RootCAs: pool}, nil
+		cfg.RootCAs = pool
 	}
-	return nil, nil
+	if f.TLSSkipVerify {
+		cfg.InsecureSkipVerify = true //nolint:gosec
+	}
+	if cfg.RootCAs == nil && len(cfg.Certificates) == 0 && !cfg.InsecureSkipVerify {
+		return nil, nil
+	}
+	return cfg, nil
+}
+
+func applyCertPoolFromEnv(
+	cfg *tls.Config,
+	lookupEnv func(string) (string, bool),
+	readFile func(string) ([]byte, error),
+	envKey string,
+) {
+	path, ok := lookupNonEmptyEnv(lookupEnv, envKey)
+	if !ok {
+		return
+	}
+	pool, err := loadCertPool(path, readFile)
+	if err != nil {
+		return
+	}
+	cfg.RootCAs = pool
+}
+
+func applyClientCertificateFromEnv(
+	cfg *tls.Config,
+	lookupEnv func(string) (string, bool),
+	readFile func(string) ([]byte, error),
+	certEnvKey string,
+	keyEnvKey string,
+) {
+	certPath, ok := lookupNonEmptyEnv(lookupEnv, certEnvKey)
+	if !ok {
+		return
+	}
+	keyPath, ok := lookupNonEmptyEnv(lookupEnv, keyEnvKey)
+	if !ok {
+		return
+	}
+
+	certPEM, err := readFile(certPath)
+	if err != nil {
+		return
+	}
+	keyPEM, err := readFile(keyPath)
+	if err != nil {
+		return
+	}
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return
+	}
+	cfg.Certificates = []tls.Certificate{cert}
+}
+
+func loadCertPool(path string, readFile func(string) ([]byte, error)) (*x509.CertPool, error) {
+	pem, err := readFile(path)
+	if err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, fmt.Errorf("no valid PEM certificates found in %q", path)
+	}
+	return pool, nil
+}
+
+func lookupNonEmptyEnv(lookupEnv func(string) (string, bool), key string) (string, bool) {
+	value, ok := lookupEnv(key)
+	if !ok {
+		return "", false
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false
+	}
+	return value, true
 }
 
 func (f ExporterFactory) NewExporter(ctx context.Context) (trace.SpanExporter, error) {
@@ -53,6 +149,10 @@ func (f ExporterFactory) NewExporter(ctx context.Context) (trace.SpanExporter, e
 		options := []otlptracehttp.Option{otlptracehttp.WithEndpoint(endpoint)}
 		if f.Insecure {
 			options = append(options, otlptracehttp.WithInsecure())
+		} else if tlsCfg, err := f.tlsConfig(); err != nil {
+			return nil, err
+		} else if tlsCfg != nil {
+			options = append(options, otlptracehttp.WithTLSClientConfig(tlsCfg))
 		}
 		if path != "" {
 			options = append(options, otlptracehttp.WithURLPath(path))
@@ -66,6 +166,10 @@ func (f ExporterFactory) NewExporter(ctx context.Context) (trace.SpanExporter, e
 	options := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(endpoint)}
 	if f.Insecure {
 		options = append(options, otlptracegrpc.WithInsecure())
+	} else if tlsCfg, err := f.tlsConfig(); err != nil {
+		return nil, err
+	} else if tlsCfg != nil {
+		options = append(options, otlptracegrpc.WithTLSCredentials(credentials.NewTLS(tlsCfg)))
 	}
 	if len(f.Headers) > 0 {
 		options = append(options, otlptracegrpc.WithHeaders(f.Headers))
