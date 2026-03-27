@@ -24,6 +24,8 @@ func main() {
 		endpoint                 string
 		protocol                 string
 		insecure                 bool
+		tlsCACert                string
+		tlsSkipVerify            bool
 		exporters                int
 		requestsPerExporter      int
 		requestIntervalSeconds   float64
@@ -53,6 +55,8 @@ func main() {
 	flag.StringVar(&endpoint, "endpoint", defaults.Endpoint.Address, "OTLP endpoint (for HTTP, prefer http(s)://host:port/v1/traces)")
 	flag.StringVar(&protocol, "protocol", string(defaults.Endpoint.Protocol), "OTLP protocol: grpc or http")
 	flag.BoolVar(&insecure, "insecure", defaults.Endpoint.Insecure, "disable TLS for OTLP exporters")
+	flag.StringVar(&tlsCACert, "tls-ca-cert", "", "path to PEM CA certificate file for server verification")
+	flag.BoolVar(&tlsSkipVerify, "tls-skip-verify", false, "skip TLS certificate verification")
 	flag.IntVar(&exporters, "exporters", defaults.Concurrency.Exporters, "number of concurrent exporters (connections)")
 	flag.IntVar(&requestsPerExporter, "max-requests", defaults.Requests.PerExporter, "requests per exporter (0 for no request limit)")
 	flag.Float64Var(&requestIntervalSeconds, "request-interval", defaults.Requests.Interval.Seconds(), "seconds between requests per exporter (0 for no delay)")
@@ -146,6 +150,11 @@ func main() {
 	if !dryRun && outputFormat != otlp.DryRunOutputSummary {
 		log.Fatalf("-o/--output=%s requires --dry-run", outputFormat)
 	}
+	if insecure && (isFlagSet("tls-ca-cert") || isFlagSet("tls-skip-verify")) {
+		log.Printf("warning: --tls-ca-cert and --tls-skip-verify are ignored when --insecure is set")
+		tlsCACert = ""
+		tlsSkipVerify = false
+	}
 
 	var factory pipeline.ExporterFactory
 	if dryRun {
@@ -161,6 +170,8 @@ func main() {
 			Insecure:          cfg.Endpoint.Insecure,
 			Headers:           cfg.Endpoint.Headers,
 			SlowResponseDelay: slowResponseDelay,
+			TLSCACert:         tlsCACert,
+			TLSSkipVerify:     tlsSkipVerify,
 		}
 		factory = otlpFactory
 		fmt.Fprintln(os.Stderr, "Running exporter preflight check...")

@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"google.golang.org/grpc/credentials"
 )
 
 type directBatchExporter struct {
@@ -71,13 +72,19 @@ func (f ExporterFactory) newOTLPClient() (otlptrace.Client, error) {
 			options = append(options, otlptracehttp.WithHeaders(f.Headers))
 		}
 		if f.SlowResponseDelay > 0 {
+			base := http.DefaultTransport.(*http.Transport).Clone()
+			if tlsCfg, err := f.tlsConfig(); err != nil {
+				return nil, err
+			} else if tlsCfg != nil {
+				base.TLSClientConfig = tlsCfg
+			}
 			options = append(options, otlptracehttp.WithHTTPClient(&http.Client{
-				Transport: &slowRoundTripper{
-					wrapped: http.DefaultTransport,
-					delay:   f.SlowResponseDelay,
-				},
+				Transport: &slowRoundTripper{wrapped: base, delay: f.SlowResponseDelay},
 			}))
-			// TODO: WithHTTPClient overrides WithTLSClientConfig; custom TLS support pending
+		} else if tlsCfg, err := f.tlsConfig(); err != nil {
+			return nil, err
+		} else if tlsCfg != nil {
+			options = append(options, otlptracehttp.WithTLSClientConfig(tlsCfg))
 		}
 		return otlptracehttp.NewClient(options...), nil
 	}
@@ -85,6 +92,10 @@ func (f ExporterFactory) newOTLPClient() (otlptrace.Client, error) {
 	options := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(endpoint)}
 	if f.Insecure {
 		options = append(options, otlptracegrpc.WithInsecure())
+	} else if tlsCfg, err := f.tlsConfig(); err != nil {
+		return nil, err
+	} else if tlsCfg != nil {
+		options = append(options, otlptracegrpc.WithTLSCredentials(credentials.NewTLS(tlsCfg)))
 	}
 	if len(f.Headers) > 0 {
 		options = append(options, otlptracegrpc.WithHeaders(f.Headers))

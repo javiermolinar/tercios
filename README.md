@@ -107,6 +107,63 @@ Notes:
 - CLI flags still take precedence over environment variables.
 - `localhost:4317` is the common OTLP gRPC endpoint for an OTEL Collector.
 
+## TLS / secure OTLP endpoints
+
+Tercios now exposes TLS settings as first-class CLI flags and JSON config fields.
+Use these when your collector uses HTTPS/TLS with an internal CA or self-signed chain.
+
+CLI flags:
+- `--tls-ca-cert <path>`: PEM CA certificate bundle used to verify the collector certificate
+- `--tls-skip-verify`: skip TLS certificate verification (**testing only**)
+
+Notes:
+- Both flags are ignored when `--insecure` is set.
+- They work with both OTLP/gRPC and OTLP/HTTP.
+- They also work with `--slow-response-delay` on the HTTP exporter path.
+- Standard OpenTelemetry OTLP TLS env vars are still supported for advanced setups such as mTLS.
+
+Examples:
+
+HTTP with an internal CA:
+
+```bash
+go run ./cmd/tercios \
+  --protocol=http \
+  --endpoint=https://collector.internal:4318/v1/traces \
+  --tls-ca-cert=/path/to/internal-ca.pem \
+  --exporters=5 \
+  --max-requests=100
+```
+
+gRPC with certificate verification disabled (testing only):
+
+```bash
+go run ./cmd/tercios \
+  --protocol=grpc \
+  --endpoint=collector.internal:4317 \
+  --tls-skip-verify \
+  --exporters=5 \
+  --max-requests=100
+```
+
+JSON config shape:
+
+```json
+{
+  "endpoint": {
+    "address": "collector.internal:4317",
+    "protocol": "grpc",
+    "insecure": false,
+    "tls_ca_cert": "/path/to/internal-ca.pem",
+    "tls_skip_verify": false
+  }
+}
+```
+
+Advanced note:
+- If you already rely on standard OTEL env vars such as `OTEL_EXPORTER_OTLP_CERTIFICATE`, `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE`, or `OTEL_EXPORTER_OTLP_CLIENT_KEY`, they continue to work.
+- Signal-specific env vars such as `OTEL_EXPORTER_OTLP_TRACES_*` still take precedence over the generic `OTEL_EXPORTER_OTLP_*` equivalents.
+
 ---
 
 ## 2) Stress testing an OpenTelemetry Collector
@@ -281,6 +338,8 @@ go run ./cmd/tercios \
 - `--endpoint` OTLP endpoint (gRPC: `host:port`, HTTP: `http(s)://host:port/v1/traces`)
 - `--protocol` `grpc` or `http`
 - `--insecure` disable TLS
+- `--tls-ca-cert` PEM CA certificate bundle used to verify the collector certificate
+- `--tls-skip-verify` skip TLS certificate verification (testing only)
 - `--header` repeatable headers (`Key=Value` or `Key: Value`)
 - `--exporters` concurrent exporters
 - `--max-requests` requests per exporter (`0` for no request limit)
@@ -309,3 +368,4 @@ go run ./cmd/tercios \
 ## JSON config example
 
 `examples/config.json` shows the nested config shape used by `config.DecodeJSON`.
+The endpoint object also supports `tls_ca_cert` and `tls_skip_verify` for secure collector setups.

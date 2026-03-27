@@ -52,10 +52,12 @@ func (d Duration) Seconds() float64 {
 }
 
 type EndpointConfig struct {
-	Address  string            `json:"address"`
-	Protocol Protocol          `json:"protocol"`
-	Insecure bool              `json:"insecure"`
-	Headers  map[string]string `json:"headers,omitempty"`
+	Address       string            `json:"address"`
+	Protocol      Protocol          `json:"protocol"`
+	Insecure      bool              `json:"insecure"`
+	Headers       map[string]string `json:"headers,omitempty"`
+	TLSCACert     string            `json:"tls_ca_cert,omitempty"`
+	TLSSkipVerify bool              `json:"tls_skip_verify,omitempty"`
 }
 
 type ConcurrencyConfig struct {
