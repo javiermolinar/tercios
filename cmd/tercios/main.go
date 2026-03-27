@@ -21,31 +21,32 @@ import (
 
 func main() {
 	var (
-		endpoint               string
-		protocol               string
-		insecure               bool
-		exporters              int
-		requestsPerExporter    int
-		requestIntervalSeconds float64
-		requestForSeconds      float64
-		rampUpSeconds          float64
-		exportTimeoutSeconds   float64
-		services               int
-		maxDepth               int
-		maxSpans               int
-		errorRate              float64
-		serviceName            string
-		spanName               string
-		scenarioFiles          scenario.FileFlags
-		scenarioStrategy       string
-		scenarioRunSeed        int64
-		chaosPoliciesFile      string
-		chaosSeed              int64
-		dryRun                 bool
-		output                 string
-		summaryTraceIDs        bool
-		summaryTraceIDsLimit   int
-		headers                config.HeaderFlags
+		endpoint                 string
+		protocol                 string
+		insecure                 bool
+		exporters                int
+		requestsPerExporter      int
+		requestIntervalSeconds   float64
+		requestForSeconds        float64
+		rampUpSeconds            float64
+		exportTimeoutSeconds     float64
+		services                 int
+		maxDepth                 int
+		maxSpans                 int
+		errorRate                float64
+		serviceName              string
+		spanName                 string
+		scenarioFiles            scenario.FileFlags
+		scenarioStrategy         string
+		scenarioRunSeed          int64
+		chaosPoliciesFile        string
+		chaosSeed                int64
+		dryRun                   bool
+		output                   string
+		summaryTraceIDs          bool
+		summaryTraceIDsLimit     int
+		headers                  config.HeaderFlags
+		slowResponseDelaySeconds float64
 	)
 
 	defaults := config.DefaultConfig()
@@ -76,6 +77,7 @@ func main() {
 	flag.BoolVar(&summaryTraceIDs, "summary-trace-ids", false, "include sampled trace IDs in summary output")
 	flag.IntVar(&summaryTraceIDsLimit, "summary-trace-ids-limit", 10, "maximum number of sampled trace IDs to include in summary")
 	flag.Var(&headers, "header", "Header in Key=Value or Key: Value format; repeatable")
+	flag.Float64Var(&slowResponseDelaySeconds, "slow-response-delay", 0, "seconds to delay reading each HTTP response body, simulating a slow client (HTTP only, 0 disables)")
 	flag.Parse()
 	if flag.NFlag() == 0 {
 		fmt.Fprintln(os.Stderr, "error: no arguments provided; use --dry-run to generate locally or -h for help")
@@ -97,6 +99,7 @@ func main() {
 	requestFor := time.Duration(requestForSeconds * float64(time.Second))
 	rampUp := time.Duration(rampUpSeconds * float64(time.Second))
 	exportTimeout := time.Duration(exportTimeoutSeconds * float64(time.Second))
+	slowResponseDelay := time.Duration(slowResponseDelaySeconds * float64(time.Second))
 	cfg := config.Config{
 		Endpoint: config.EndpointConfig{
 			Address:  endpoint,
@@ -149,11 +152,15 @@ func main() {
 		dryRunFactory := otlp.NewDryRunExporterFactory(outputFormat, os.Stdout)
 		factory = dryRunFactory
 	} else {
+		if slowResponseDelay > 0 && cfg.Endpoint.Protocol != config.ProtocolHTTP {
+			log.Printf("warning: --slow-response-delay has no effect with protocol=%s (HTTP only)", cfg.Endpoint.Protocol)
+		}
 		otlpFactory := otlp.ExporterFactory{
-			Protocol: cfg.Endpoint.Protocol,
-			Endpoint: cfg.Endpoint.Address,
-			Insecure: cfg.Endpoint.Insecure,
-			Headers:  cfg.Endpoint.Headers,
+			Protocol:          cfg.Endpoint.Protocol,
+			Endpoint:          cfg.Endpoint.Address,
+			Insecure:          cfg.Endpoint.Insecure,
+			Headers:           cfg.Endpoint.Headers,
+			SlowResponseDelay: slowResponseDelay,
 		}
 		factory = otlpFactory
 		fmt.Fprintln(os.Stderr, "Running exporter preflight check...")
