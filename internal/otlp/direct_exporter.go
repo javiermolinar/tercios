@@ -3,6 +3,7 @@ package otlp
 import (
 	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/javiermolinar/tercios/internal/config"
 	"github.com/javiermolinar/tercios/internal/model"
@@ -68,6 +69,15 @@ func (f ExporterFactory) newOTLPClient() (otlptrace.Client, error) {
 		}
 		if len(f.Headers) > 0 {
 			options = append(options, otlptracehttp.WithHeaders(f.Headers))
+		}
+		if f.SlowResponseDelay > 0 {
+			options = append(options, otlptracehttp.WithHTTPClient(&http.Client{
+				Transport: &slowRoundTripper{
+					wrapped: http.DefaultTransport,
+					delay:   f.SlowResponseDelay,
+				},
+			}))
+			// TODO: WithHTTPClient overrides WithTLSClientConfig; custom TLS support pending
 		}
 		return otlptracehttp.NewClient(options...), nil
 	}

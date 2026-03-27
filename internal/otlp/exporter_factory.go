@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/javiermolinar/tercios/internal/config"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -13,10 +14,11 @@ import (
 )
 
 type ExporterFactory struct {
-	Protocol config.Protocol
-	Endpoint string
-	Insecure bool
-	Headers  map[string]string
+	Protocol          config.Protocol
+	Endpoint          string
+	Insecure          bool
+	Headers           map[string]string
+	SlowResponseDelay time.Duration
 }
 
 func (f ExporterFactory) NewExporter(ctx context.Context) (trace.SpanExporter, error) {
