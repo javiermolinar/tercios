@@ -21,6 +21,9 @@ type Stats struct {
 	durations            []time.Duration
 	successes            int
 	failures             int
+	attemptedSpans       int
+	successfulSpans      int
+	failedSpans          int
 	failureBreakdown     map[string]int
 	failureSamples       map[string][]string
 	traceIDSampleLimit   int
@@ -48,18 +51,29 @@ func NewStatsWithTraceIDSampleLimit(limit int) *Stats {
 }
 
 func (s *Stats) Record(duration time.Duration, err error) {
-	s.RecordWithTraceIDs(duration, err, nil)
+	s.RecordBatchWithTraceIDs(duration, err, nil, 0)
 }
 
 func (s *Stats) RecordWithTraceIDs(duration time.Duration, err error, traceIDs []string) {
+	s.RecordBatchWithTraceIDs(duration, err, traceIDs, 0)
+}
+
+func (s *Stats) RecordBatchWithTraceIDs(duration time.Duration, err error, traceIDs []string, spans int) {
+	if spans < 0 {
+		spans = 0
+	}
+
 	s.durations = append(s.durations, duration)
+	s.attemptedSpans += spans
 	if err != nil {
 		s.failures++
+		s.failedSpans += spans
 		class := classifyError(err)
 		s.failureBreakdown[class]++
 		s.recordFailureSample(class, err)
 	} else {
 		s.successes++
+		s.successfulSpans += spans
 	}
 	s.recordTraceIDSamples(traceIDs, err != nil)
 }
@@ -118,32 +132,46 @@ func (s *Stats) recordTraceIDSamples(traceIDs []string, failed bool) {
 }
 
 type Summary struct {
-	Total                int
-	Successes            int
-	Failures             int
-	AvgLatency           time.Duration
-	P95Latency           time.Duration
-	FailureBreakdown     map[string]int
-	FailureSamples       map[string][]string
-	TraceIDSamples       []string
-	FailedTraceIDSamples []string
+	Total                       int
+	Successes                   int
+	Failures                    int
+	WallTime                    time.Duration
+	RequestsPerSecond           float64
+	SuccessfulRequestsPerSecond float64
+	TotalSpans                  int
+	SuccessfulSpans             int
+	FailedSpans                 int
+	SpansPerSecond              float64
+	SuccessfulSpansPerSecond    float64
+	AverageSpansPerRequest      float64
+	AvgLatency                  time.Duration
+	P95Latency                  time.Duration
+	FailureBreakdown            map[string]int
+	FailureSamples              map[string][]string
+	TraceIDSamples              []string
+	FailedTraceIDSamples        []string
 }
 
 func (s *Stats) Summary() Summary {
-	total := len(s.durations)
-	if total == 0 {
-		return Summary{
+	totalRequests := len(s.durations)
+	if totalRequests == 0 {
+		summary := Summary{
 			Total:                0,
 			Successes:            s.successes,
 			Failures:             s.failures,
+			TotalSpans:           s.attemptedSpans,
+			SuccessfulSpans:      s.successfulSpans,
+			FailedSpans:          s.failedSpans,
 			FailureBreakdown:     cloneBreakdown(s.failureBreakdown),
 			FailureSamples:       cloneSamples(s.failureSamples),
 			TraceIDSamples:       cloneStrings(s.traceIDSamples),
 			FailedTraceIDSamples: cloneStrings(s.failedTraceIDSamples),
 		}
+		populateDerivedSummary(&summary)
+		return summary
 	}
 
-	durations := make([]time.Duration, total)
+	durations := make([]time.Duration, len(s.durations))
 	copy(durations, s.durations)
 	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
 
@@ -151,14 +179,17 @@ func (s *Stats) Summary() Summary {
 	for _, d := range durations {
 		sum += d
 	}
-	avg := time.Duration(int64(sum) / int64(total))
-	p95Index := int(float64(total-1) * 0.95)
+	avg := time.Duration(int64(sum) / int64(len(durations)))
+	p95Index := int(float64(len(durations)-1) * 0.95)
 	p95 := durations[p95Index]
 
-	return Summary{
-		Total:                total,
+	summary := Summary{
+		Total:                totalRequests,
 		Successes:            s.successes,
 		Failures:             s.failures,
+		TotalSpans:           s.attemptedSpans,
+		SuccessfulSpans:      s.successfulSpans,
+		FailedSpans:          s.failedSpans,
 		AvgLatency:           avg,
 		P95Latency:           p95,
 		FailureBreakdown:     cloneBreakdown(s.failureBreakdown),
@@ -166,12 +197,24 @@ func (s *Stats) Summary() Summary {
 		TraceIDSamples:       cloneStrings(s.traceIDSamples),
 		FailedTraceIDSamples: cloneStrings(s.failedTraceIDSamples),
 	}
+	populateDerivedSummary(&summary)
+	return summary
+}
+
+func (s *Stats) SummaryWithElapsed(elapsed time.Duration) Summary {
+	summary := s.Summary()
+	summary.WallTime = elapsed
+	populateDerivedSummary(&summary)
+	return summary
 }
 
 func Summarize(stats []*Stats) Summary {
 	var total int
 	var successes int
 	var failures int
+	var totalSpans int
+	var successfulSpans int
+	var failedSpans int
 	failureBreakdown := make(map[string]int)
 	failureSamples := make(map[string][]string)
 	traceIDLimit := 0
@@ -185,6 +228,9 @@ func Summarize(stats []*Stats) Summary {
 		total += len(stat.durations)
 		successes += stat.successes
 		failures += stat.failures
+		totalSpans += stat.attemptedSpans
+		successfulSpans += stat.successfulSpans
+		failedSpans += stat.failedSpans
 		mergeBreakdown(failureBreakdown, stat.failureBreakdown)
 		mergeSamples(failureSamples, stat.failureSamples)
 		if stat.traceIDSampleLimit > traceIDLimit {
@@ -199,16 +245,17 @@ func Summarize(stats []*Stats) Summary {
 		failedTraceIDSamples = mergeStringSamples(failedTraceIDSamples, stat.failedTraceIDSamples, traceIDLimit)
 	}
 
-	if total == 0 {
-		return Summary{
-			Total:                0,
-			Successes:            successes,
-			Failures:             failures,
-			FailureBreakdown:     failureBreakdown,
-			FailureSamples:       failureSamples,
-			TraceIDSamples:       traceIDSamples,
-			FailedTraceIDSamples: failedTraceIDSamples,
-		}
+	summary := Summary{
+		Total:                total,
+		Successes:            successes,
+		Failures:             failures,
+		TotalSpans:           totalSpans,
+		SuccessfulSpans:      successfulSpans,
+		FailedSpans:          failedSpans,
+		FailureBreakdown:     failureBreakdown,
+		FailureSamples:       failureSamples,
+		TraceIDSamples:       traceIDSamples,
+		FailedTraceIDSamples: failedTraceIDSamples,
 	}
 
 	durations := make([]time.Duration, 0, total)
@@ -218,27 +265,20 @@ func Summarize(stats []*Stats) Summary {
 		}
 		durations = append(durations, stat.durations...)
 	}
+	if len(durations) == 0 {
+		populateDerivedSummary(&summary)
+		return summary
+	}
 	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
 
 	var sum time.Duration
 	for _, d := range durations {
 		sum += d
 	}
-	avg := time.Duration(int64(sum) / int64(total))
-	p95Index := int(float64(total-1) * 0.95)
-	p95 := durations[p95Index]
-
-	return Summary{
-		Total:                total,
-		Successes:            successes,
-		Failures:             failures,
-		AvgLatency:           avg,
-		P95Latency:           p95,
-		FailureBreakdown:     failureBreakdown,
-		FailureSamples:       failureSamples,
-		TraceIDSamples:       traceIDSamples,
-		FailedTraceIDSamples: failedTraceIDSamples,
-	}
+	summary.AvgLatency = time.Duration(int64(sum) / int64(len(durations)))
+	summary.P95Latency = durations[int(float64(len(durations)-1)*0.95)]
+	populateDerivedSummary(&summary)
+	return summary
 }
 
 type InstrumentedExporter struct {
@@ -276,7 +316,7 @@ func (e *InstrumentedBatchExporter) ExportBatch(ctx context.Context, batch model
 	start := time.Now()
 	err := e.inner.ExportBatch(ctx, batch)
 	if e.stats != nil {
-		e.stats.Record(time.Since(start), err)
+		e.stats.RecordBatchWithTraceIDs(time.Since(start), err, nil, len(batch))
 	}
 	return err
 }
@@ -285,14 +325,59 @@ func (e *InstrumentedBatchExporter) Shutdown(ctx context.Context) error {
 	return e.inner.Shutdown(ctx)
 }
 
+func populateDerivedSummary(summary *Summary) {
+	if summary == nil {
+		return
+	}
+	if summary.Total > 0 {
+		summary.AverageSpansPerRequest = float64(summary.TotalSpans) / float64(summary.Total)
+	}
+	if summary.WallTime > 0 {
+		seconds := summary.WallTime.Seconds()
+		if seconds > 0 {
+			summary.RequestsPerSecond = float64(summary.Total) / seconds
+			summary.SuccessfulRequestsPerSecond = float64(summary.Successes) / seconds
+			summary.SpansPerSecond = float64(summary.TotalSpans) / seconds
+			summary.SuccessfulSpansPerSecond = float64(summary.SuccessfulSpans) / seconds
+		}
+	}
+}
+
 func FormatSummary(summary Summary) string {
 	lines := []string{
 		fmt.Sprintf("Sent %s requests", formatCount(summary.Total)),
 		fmt.Sprintf("Success: %s", formatCount(summary.Successes)),
 		fmt.Sprintf("Failures: %s", formatCount(summary.Failures)),
+	}
+	if summary.WallTime > 0 {
+		lines = append(lines,
+			fmt.Sprintf("Wall time: %s", formatWallTime(summary.WallTime)),
+			fmt.Sprintf("Request rate: %s req/s", formatRate(summary.RequestsPerSecond)),
+			fmt.Sprintf("Successful request rate: %s req/s", formatRate(summary.SuccessfulRequestsPerSecond)),
+		)
+	}
+	if summary.TotalSpans > 0 || summary.SuccessfulSpans > 0 || summary.FailedSpans > 0 {
+		lines = append(lines,
+			fmt.Sprintf("Attempted spans: %s", formatCount(summary.TotalSpans)),
+			fmt.Sprintf("Successful spans: %s", formatCount(summary.SuccessfulSpans)),
+		)
+		if summary.FailedSpans > 0 {
+			lines = append(lines, fmt.Sprintf("Failed spans: %s", formatCount(summary.FailedSpans)))
+		}
+		if summary.WallTime > 0 {
+			lines = append(lines,
+				fmt.Sprintf("Span rate: %s spans/s", formatRate(summary.SpansPerSecond)),
+				fmt.Sprintf("Successful span rate: %s spans/s", formatRate(summary.SuccessfulSpansPerSecond)),
+			)
+		}
+		if summary.AverageSpansPerRequest > 0 {
+			lines = append(lines, fmt.Sprintf("Avg spans/request: %.1f", summary.AverageSpansPerRequest))
+		}
+	}
+	lines = append(lines,
 		fmt.Sprintf("Avg latency: %s", formatLatency(summary.AvgLatency)),
 		fmt.Sprintf("P95 latency: %s", formatLatency(summary.P95Latency)),
-	}
+	)
 
 	if summary.Failures > 0 && len(summary.FailureBreakdown) > 0 {
 		keys := make([]string, 0, len(summary.FailureBreakdown))
@@ -344,7 +429,10 @@ func FormatProgress(summary Summary, expected int) string {
 }
 
 func formatCount(count int) string {
-	if count >= 1000 {
+	if count >= 1_000_000 {
+		return fmt.Sprintf("%.1fM", float64(count)/1_000_000)
+	}
+	if count >= 1_000 {
 		value := float64(count) / 1000.0
 		if count%1000 == 0 {
 			return fmt.Sprintf("%dk", count/1000)
@@ -359,6 +447,23 @@ func formatLatency(duration time.Duration) string {
 		return "0ms"
 	}
 	return fmt.Sprintf("%dms", duration.Milliseconds())
+}
+
+func formatRate(value float64) string {
+	if value >= 1_000_000 {
+		return fmt.Sprintf("%.1fM", value/1_000_000)
+	}
+	if value >= 1_000 {
+		return fmt.Sprintf("%.1fk", value/1_000)
+	}
+	return fmt.Sprintf("%.1f", value)
+}
+
+func formatWallTime(duration time.Duration) string {
+	if duration <= 0 {
+		return "0s"
+	}
+	return fmt.Sprintf("%.3fs", duration.Seconds())
 }
 
 func cloneBreakdown(in map[string]int) map[string]int {

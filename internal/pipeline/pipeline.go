@@ -48,6 +48,7 @@ type exportResult struct {
 	duration time.Duration
 	err      error
 	traceIDs []string
+	spans    int
 }
 
 func (p *Pipeline) Run(ctx context.Context, runner *ConcurrencyRunner, factory ExporterFactory, requestInterval time.Duration, requestDuration time.Duration, rampUpDuration time.Duration, exportTimeout time.Duration, traceIDSampleLimit int) error {
@@ -164,7 +165,7 @@ func (p *Pipeline) Run(ctx context.Context, runner *ConcurrencyRunner, factory E
 					if err != nil {
 						err = fmt.Errorf("export worker=%d: %w", workerID, err)
 					}
-					result := exportResult{duration: time.Since(start), err: err, traceIDs: traceIDs}
+					result := exportResult{duration: time.Since(start), err: err, traceIDs: traceIDs, spans: len(batch)}
 					select {
 					case <-groupCtx.Done():
 						return groupCtx.Err()
@@ -187,9 +188,9 @@ func (p *Pipeline) Run(ctx context.Context, runner *ConcurrencyRunner, factory E
 	group.Go(func() error {
 		stats := metrics.NewStatsWithTraceIDSampleLimit(traceIDSampleLimit)
 		for result := range summaryChannel {
-			stats.RecordWithTraceIDs(result.duration, result.err, result.traceIDs)
+			stats.RecordBatchWithTraceIDs(result.duration, result.err, result.traceIDs, result.spans)
 		}
-		finalSummary <- stats.Summary()
+		finalSummary <- stats.SummaryWithElapsed(time.Since(startTime))
 		close(finalSummary)
 		return nil
 	})
