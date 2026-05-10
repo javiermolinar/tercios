@@ -1,6 +1,6 @@
 # Tercios
 
-[![Build](https://img.shields.io/github/actions/workflow/status/javiermolinar/tercios/build.yml?branch=main&label=build)](https://github.com/javiermolinar/tercios/actions/workflows/build.yml) [![Test](https://img.shields.io/github/actions/workflow/status/javiermolinar/tercios/test.yml?branch=main&label=test)](https://github.com/javiermolinar/tercios/actions/workflows/test.yml) [![Release](https://img.shields.io/github/v/release/javiermolinar/tercios?display_name=tag)](https://github.com/javiermolinar/tercios/releases) [![License](https://img.shields.io/github/license/javiermolinar/tercios)](./LICENSE)
+[![Build](https://img.shields.io/github/actions/workflow/status/javiermolinar/tercios/build.yml?branch=main&label=build)](https://github.com/javiermolinar/tercios/actions/workflows/build.yml) [![Test](https://img.shields.io/github/actions/workflow/status/javiermolinar/tercios/test.yml?branch=main&label=test)](https://github.com/javiermolinar/tercios/actions/workflows/test.yml) [![Lint](https://img.shields.io/github/actions/workflow/status/javiermolinar/tercios/lint.yml?branch=main&label=lint)](https://github.com/javiermolinar/tercios/actions/workflows/lint.yml) [![Release](https://img.shields.io/github/v/release/javiermolinar/tercios?display_name=tag)](https://github.com/javiermolinar/tercios/releases) [![License](https://img.shields.io/github/license/javiermolinar/tercios)](./LICENSE)
 
 Tercios is a Swiss-army-knife CLI tool for generating OTLP traces to test collectors and tracing pipelines. It can be used to stress-test your tracing backend, generate complex scenarios, and introduce chaos.
 
@@ -24,25 +24,6 @@ Or download a prebuilt binary from [GitHub Releases](https://github.com/javiermo
 
 Each release also includes a `checksums.txt` file.
 
-## Docker (CI / automation)
-
-Build a local image:
-
-```bash
-make docker-build
-```
-
-Run a quick smoke test in container:
-
-```bash
-make docker-run
-```
-
-Build with buildx:
-
-```bash
-make docker-buildx
-```
 
 ## How Tercios works
 
@@ -67,12 +48,6 @@ In short: **scenario source → optional chaos → export at scale**.
 - [Chaos](docs/chaos.md) — trace mutation policies
 - [TLS](docs/tls.md) — secure endpoints, CA certs, mTLS
 - [Typed Values](docs/typed-values.md) — attribute value types, arrays, generated strings
-
-## Build
-
-```bash
-make build
-```
 
 ---
 

@@ -15,12 +15,12 @@ Add new pipeline features as stages under `internal/pipeline/` and register them
 
 ## Build, Test, and Development Commands
 
-Use the Makefile for common tasks:
+Use Go 1.26 or newer. Use the Makefile for common tasks:
 
 - `make build` builds the CLI binary.
 - `make run` runs the CLI with flags (add `--endpoint`, `--protocol`, etc.).
 - `make test` runs all tests via `go test ./...`.
-- `make lint` runs `golangci-lint` using the tools module.
+- `make lint` runs `golangci-lint` using the tools module and is enforced by CI.
 - `make vendor` tidies and vendors dependencies.
 - `make tidy` runs `go mod tidy`.
 
