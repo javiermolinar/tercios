@@ -68,7 +68,7 @@ func main() {
 	flag.StringVar(&output, "o", string(otlp.DryRunOutputSummary), "output format shorthand: summary or json")
 	flag.BoolVar(&summaryTraceIDs, "summary-trace-ids", false, "include sampled trace IDs in summary output")
 	flag.IntVar(&summaryTraceIDsLimit, "summary-trace-ids-limit", 10, "maximum number of sampled trace IDs to include in summary")
-	flag.Var(&headers, "header", "Header in Key=Value or Key: Value format; repeatable")
+	flag.Var(&headers, "header", "header in Key=Value or Key: Value format; repeatable")
 	flag.Float64Var(&slowResponseDelaySeconds, "slow-response-delay", 0, "seconds to delay reading each HTTP response body, simulating a slow client (HTTP only, 0 disables)")
 	flag.Parse()
 	if flag.NFlag() == 0 {
