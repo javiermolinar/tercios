@@ -46,18 +46,20 @@ make docker-buildx
 
 ## How Tercios works
 
-Tercios is a composable pipeline with two pieces:
+Tercios generates OTLP traces and sends them at configurable concurrency and rate to stress-test collectors, backends, and tracing pipelines. The pipeline has two composable pieces:
 
 1. **Scenarios (trace topology)**
-   - An embedded default scenario (5-service web app) is used out of the box.
-   - Use `--scenario-file` to provide custom topology definitions (repeatable).
-   - Generates deterministic traces with namespaced trace/span IDs per process.
+   - A built-in default scenario (5-service web app) is used out of the box — no config needed.
+   - Use `--scenario-file` for custom topology definitions (repeatable).
+   - Deterministic traces with namespaced trace/span IDs per process.
 
 2. **Chaos (optional mutations)**
    - Enabled with `--chaos-policies-file`.
    - Mutates generated traces (status, attributes, latency, etc.) to test resilience and analysis behavior.
 
-In short: **scenario source → optional chaos → export**.
+Scale with `--exporters` (parallel connections), `--max-requests` (volume), `--for` (duration), and `--ramp-up` (gradual warm-up).
+
+In short: **scenario source → optional chaos → export at scale**.
 
 ## Documentation
 
