@@ -44,6 +44,7 @@ func main() {
 		slowResponseDelaySeconds float64
 	)
 
+	flag.Usage = usage
 	defaults := config.DefaultConfig()
 	flag.StringVar(&endpoint, "endpoint", defaults.Endpoint.Address, "OTLP endpoint (for HTTP, prefer http(s)://host:port/v1/traces)")
 	flag.StringVar(&protocol, "protocol", string(defaults.Endpoint.Protocol), "OTLP protocol: grpc or http")
@@ -212,5 +213,52 @@ func main() {
 	if err != nil {
 		log.Printf("pipeline failed: %v", err)
 		os.Exit(1)
+	}
+}
+
+func usage() {
+	w := os.Stderr
+	fmt.Fprintf(w, `tercios — OTLP trace generator for load testing collectors and tracing pipelines.
+
+Usage:
+  tercios [flags]
+
+Examples:
+  # Quick local test (embedded 5-service scenario, no collector needed)
+  tercios --dry-run
+
+  # See generated spans as JSON
+  tercios --dry-run -o json 2>/dev/null
+
+  # Stress test a collector (50 workers, max speed, 60s)
+  tercios --endpoint=localhost:4317 --exporters=50 --max-requests=0 --for=60 --request-interval=0
+
+  # Custom scenario + chaos
+  tercios -s my-scenario.json --chaos-policies-file=my-chaos.json --exporters=10 --max-requests=100
+
+Connection:
+`)
+	printFlag(w, "endpoint", "protocol", "insecure", "header", "tls-ca-cert", "tls-skip-verify")
+	fmt.Fprintf(w, "\nLoad:\n")
+	printFlag(w, "exporters", "max-requests", "request-interval", "for", "ramp-up", "export-timeout", "slow-response-delay")
+	fmt.Fprintf(w, "\nScenarios:\n")
+	printFlag(w, "scenario-file", "scenario-strategy", "scenario-run-seed")
+	fmt.Fprintf(w, "\nChaos:\n")
+	printFlag(w, "chaos-policies-file", "chaos-seed")
+	fmt.Fprintf(w, "\nOutput:\n")
+	printFlag(w, "dry-run", "output", "summary-trace-ids", "summary-trace-ids-limit")
+}
+
+func printFlag(w *os.File, names ...string) {
+	for _, name := range names {
+		f := flag.Lookup(name)
+		if f == nil {
+			continue
+		}
+		def := ""
+		if f.DefValue != "" && f.DefValue != "0" && f.DefValue != "false" {
+			def = fmt.Sprintf(" (default %s)", f.DefValue)
+		}
+		fmt.Fprintf(w, "  --%s\n        %s%s\n", f.Name, f.Usage, def)
 	}
 }
