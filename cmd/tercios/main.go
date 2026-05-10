@@ -201,7 +201,8 @@ func main() {
 	if summaryTraceIDs {
 		traceIDSampleLimit = summaryTraceIDsLimit
 	}
-	err = pipe.Run(ctx, runner, factory, cfg.Requests.Interval.Duration, cfg.Requests.For.Duration, cfg.Requests.RampUp.Duration, cfg.Requests.ExportTimeout.Duration, traceIDSampleLimit)
+	progressInterval := 5 * time.Second
+	err = pipe.RunWithProgress(ctx, runner, factory, cfg.Requests.Interval.Duration, cfg.Requests.For.Duration, cfg.Requests.RampUp.Duration, cfg.Requests.ExportTimeout.Duration, traceIDSampleLimit, progressInterval, os.Stderr)
 	summary := metrics.FormatSummary(pipe.Summary())
 	if dryRun && outputFormat == otlp.DryRunOutputJSON {
 		fmt.Fprintln(os.Stderr, summary)

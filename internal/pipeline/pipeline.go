@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -52,6 +53,10 @@ type exportResult struct {
 }
 
 func (p *Pipeline) Run(ctx context.Context, runner *ConcurrencyRunner, factory ExporterFactory, requestInterval time.Duration, requestDuration time.Duration, rampUpDuration time.Duration, exportTimeout time.Duration, traceIDSampleLimit int) error {
+	return p.RunWithProgress(ctx, runner, factory, requestInterval, requestDuration, rampUpDuration, exportTimeout, traceIDSampleLimit, 0, nil)
+}
+
+func (p *Pipeline) RunWithProgress(ctx context.Context, runner *ConcurrencyRunner, factory ExporterFactory, requestInterval time.Duration, requestDuration time.Duration, rampUpDuration time.Duration, exportTimeout time.Duration, traceIDSampleLimit int, progressInterval time.Duration, progressWriter io.Writer) error {
 	if runner == nil {
 		return fmt.Errorf("concurrency runner not configured")
 	}
@@ -185,14 +190,32 @@ func (p *Pipeline) Run(ctx context.Context, runner *ConcurrencyRunner, factory E
 		return nil
 	})
 
+	expectedTotal := runner.Workers() * runner.RequestsPerWorker()
+
 	group.Go(func() error {
 		stats := metrics.NewStatsWithTraceIDSampleLimit(traceIDSampleLimit)
-		for result := range summaryChannel {
-			stats.RecordBatchWithTraceIDs(result.duration, result.err, result.traceIDs, result.spans)
+
+		var ticker *time.Ticker
+		var tickCh <-chan time.Time
+		if progressInterval > 0 && progressWriter != nil {
+			ticker = time.NewTicker(progressInterval)
+			tickCh = ticker.C
+			defer ticker.Stop()
 		}
-		finalSummary <- stats.SummaryWithElapsed(time.Since(startTime))
-		close(finalSummary)
-		return nil
+
+		for {
+			select {
+			case result, ok := <-summaryChannel:
+				if !ok {
+					finalSummary <- stats.SummaryWithElapsed(time.Since(startTime))
+					close(finalSummary)
+					return nil
+				}
+				stats.RecordBatchWithTraceIDs(result.duration, result.err, result.traceIDs, result.spans)
+			case <-tickCh:
+				fmt.Fprintln(progressWriter, metrics.FormatProgress(stats.SummaryWithElapsed(time.Since(startTime)), expectedTotal))
+			}
+		}
 	})
 
 	err := group.Wait()
