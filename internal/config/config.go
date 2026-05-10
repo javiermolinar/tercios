@@ -72,20 +72,10 @@ type RequestConfig struct {
 	ExportTimeout Duration `json:"export_timeout"`
 }
 
-type GeneratorConfig struct {
-	Services    int     `json:"services"`
-	MaxDepth    int     `json:"max_depth"`
-	MaxSpans    int     `json:"max_spans"`
-	ErrorRate   float64 `json:"error_rate"`
-	ServiceName string  `json:"service_name"`
-	SpanName    string  `json:"span_name"`
-}
-
 type Config struct {
 	Endpoint    EndpointConfig    `json:"endpoint"`
 	Concurrency ConcurrencyConfig `json:"concurrency"`
 	Requests    RequestConfig     `json:"requests"`
-	Generator   GeneratorConfig   `json:"generator"`
 }
 
 func DefaultConfig() Config {
@@ -105,14 +95,6 @@ func DefaultConfig() Config {
 			For:           Duration{Duration: 0},
 			RampUp:        Duration{Duration: 0},
 			ExportTimeout: Duration{Duration: 10 * time.Second},
-		},
-		Generator: GeneratorConfig{
-			Services:    3,
-			MaxDepth:    3,
-			MaxSpans:    10,
-			ErrorRate:   0.2,
-			ServiceName: "",
-			SpanName:    "",
 		},
 	}
 }
@@ -163,18 +145,6 @@ func (c Config) Validate() error {
 	}
 	if c.Requests.ExportTimeout.Duration < 0 {
 		return fmt.Errorf("export timeout must be >= 0")
-	}
-	if c.Generator.Services <= 0 {
-		return fmt.Errorf("services must be > 0")
-	}
-	if c.Generator.MaxDepth <= 0 {
-		return fmt.Errorf("max depth must be > 0")
-	}
-	if c.Generator.MaxSpans <= 0 {
-		return fmt.Errorf("max spans must be > 0")
-	}
-	if c.Generator.ErrorRate < 0 || c.Generator.ErrorRate > 1 {
-		return fmt.Errorf("error rate must be between 0 and 1")
 	}
 	return nil
 }

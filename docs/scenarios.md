@@ -1,14 +1,18 @@
 # Scenarios
 
-Scenario mode generates deterministic traces from a topology definition. Use it to replay realistic service graphs with known structure, timing, and attributes.
+Tercios generates deterministic traces from scenario topology definitions. When no `--scenario-file` is provided, a built-in default scenario is used (5-service web app: gateway → api → cache + db + async worker). See the [embedded default](../internal/scenario/default_scenario.json) for the full definition.
 
-Enable with `--scenario-file` (or `-s`). This replaces the default random trace generator.
+Use `--scenario-file` (or `-s`) to provide custom scenarios.
 
 ## Quick start
 
 ```bash
+# Uses embedded default scenario
+go run ./cmd/tercios --dry-run -o json 2>/dev/null
+
+# Uses custom scenario
 go run ./cmd/tercios \
-  --scenario-file=./examples/scenario.json \
+  --scenario-file=my-scenario.json \
   --dry-run -o json \
   --exporters=1 \
   --max-requests=1 \
@@ -138,8 +142,8 @@ Provide multiple `--scenario-file` flags to mix scenarios:
 
 ```bash
 go run ./cmd/tercios \
-  -s ./examples/scenario.json \
-  -s ./examples/scenario-diff-cache-after-travel.json \
+  -s scenario-a.json \
+  -s scenario-b.json \
   --scenario-strategy=round-robin \
   --dry-run -o json \
   --exporters=1 --max-requests=4 \
@@ -179,4 +183,4 @@ go run ./cmd/tercios \
 }
 ```
 
-See also: [examples/scenario.json](../examples/scenario.json), [examples/scenario-diff-cache-after-travel.json](../examples/scenario-diff-cache-after-travel.json)
+See also: the [embedded default scenario](../internal/scenario/default_scenario.json) for a complete example.

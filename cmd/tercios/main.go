@@ -16,7 +16,6 @@ import (
 	"github.com/javiermolinar/tercios/internal/otlp"
 	"github.com/javiermolinar/tercios/internal/pipeline"
 	"github.com/javiermolinar/tercios/internal/scenario"
-	"github.com/javiermolinar/tercios/internal/tracegen"
 )
 
 func main() {
@@ -32,12 +31,6 @@ func main() {
 		requestForSeconds        float64
 		rampUpSeconds            float64
 		exportTimeoutSeconds     float64
-		services                 int
-		maxDepth                 int
-		maxSpans                 int
-		errorRate                float64
-		serviceName              string
-		spanName                 string
 		scenarioFiles            scenario.FileFlags
 		scenarioStrategy         string
 		scenarioRunSeed          int64
@@ -63,12 +56,6 @@ func main() {
 	flag.Float64Var(&requestForSeconds, "for", defaults.Requests.For.Seconds(), "seconds to send traces per exporter (0 for no duration limit)")
 	flag.Float64Var(&rampUpSeconds, "ramp-up", defaults.Requests.RampUp.Seconds(), "seconds to linearly ramp exporter workers from 0 to max concurrency")
 	flag.Float64Var(&exportTimeoutSeconds, "export-timeout", defaults.Requests.ExportTimeout.Seconds(), "seconds before each export attempt times out (0 disables per-export timeout)")
-	flag.IntVar(&services, "services", defaults.Generator.Services, "number of distinct service names to emit")
-	flag.IntVar(&maxDepth, "max-depth", defaults.Generator.MaxDepth, "maximum span depth per trace")
-	flag.IntVar(&maxSpans, "max-spans", defaults.Generator.MaxSpans, "maximum spans per trace")
-	flag.Float64Var(&errorRate, "error-rate", defaults.Generator.ErrorRate, "probability (0..1) of spans marked as error")
-	flag.StringVar(&serviceName, "service-name", defaults.Generator.ServiceName, "service.name attribute for spans")
-	flag.StringVar(&spanName, "span-name", defaults.Generator.SpanName, "span name to emit")
 	flag.Var(&scenarioFiles, "scenario-file", "path to scenario JSON file; repeatable")
 	flag.Var(&scenarioFiles, "s", "path to scenario JSON file (shorthand); repeatable")
 	flag.StringVar(&scenarioStrategy, "scenario-strategy", string(scenario.SelectionStrategyRoundRobin), "scenario selection strategy when multiple scenarios: round-robin or random")
@@ -120,14 +107,6 @@ func main() {
 			For:           config.Duration{Duration: requestFor},
 			RampUp:        config.Duration{Duration: rampUp},
 			ExportTimeout: config.Duration{Duration: exportTimeout},
-		},
-		Generator: config.GeneratorConfig{
-			Services:    services,
-			MaxDepth:    maxDepth,
-			MaxSpans:    maxSpans,
-			ErrorRate:   errorRate,
-			ServiceName: serviceName,
-			SpanName:    spanName,
 		},
 	}
 	if err := cfg.Validate(); err != nil {
@@ -195,15 +174,11 @@ func main() {
 		}
 		stages = append(stages, pipeline.NewScenarioStage(scenarioGenerator))
 	} else {
-		generator := tracegen.Generator{
-			ServiceName: cfg.Generator.ServiceName,
-			SpanName:    cfg.Generator.SpanName,
-			Services:    cfg.Generator.Services,
-			MaxDepth:    cfg.Generator.MaxDepth,
-			MaxSpans:    cfg.Generator.MaxSpans,
-			ErrorRate:   cfg.Generator.ErrorRate,
+		defaultGenerator, err := scenario.DefaultGenerator(scenarioRunSeed)
+		if err != nil {
+			log.Fatalf("embedded scenario failed: %v", err)
 		}
-		stages = append(stages, pipeline.NewGeneratorStage(&generator))
+		stages = append(stages, pipeline.NewScenarioStage(defaultGenerator))
 	}
 	if chaosPoliciesFile != "" {
 		chaosCfg, err := chaos.LoadFromJSON(chaosPoliciesFile)

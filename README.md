@@ -46,21 +46,18 @@ make docker-buildx
 
 ## How Tercios works
 
-Tercios is a composable pipeline with three main pieces:
+Tercios is a composable pipeline with two pieces:
 
-1. **Generator (load testing)**
-   - Default mode when you do not pass `--scenario-file`.
-   - Produces random traces to generate sustained load against your collector/backend.
+1. **Scenarios (trace topology)**
+   - An embedded default scenario (5-service web app) is used out of the box.
+   - Use `--scenario-file` to provide custom topology definitions (repeatable).
+   - Generates deterministic traces with namespaced trace/span IDs per process.
 
-2. **Scenarios (deterministic topology)**
-   - Enabled with `--scenario-file` (repeatable).
-   - Replays deterministic service graphs while namespacing trace/span IDs per process by default.
-
-3. **Chaos (optional mutations)**
+2. **Chaos (optional mutations)**
    - Enabled with `--chaos-policies-file`.
-   - Mutates generated/scenario traces (status, attributes, latency, etc.) to test resilience and analysis behavior.
+   - Mutates generated traces (status, attributes, latency, etc.) to test resilience and analysis behavior.
 
-In short: **generator or scenario source → optional chaos → export**.
+In short: **scenario source → optional chaos → export**.
 
 ## Documentation
 
@@ -104,12 +101,12 @@ export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=grpc
 export OTEL_EXPORTER_OTLP_TRACES_INSECURE=true
 
 go run ./cmd/tercios \
-  --scenario-file=./examples/scenario-diff-checkout-baseline.json \
   --exporters=1 \
   --max-requests=1
 ```
 
 Notes:
+- Without `--scenario-file`, Tercios uses a built-in default scenario (5-service web app).
 - `OTEL_EXPORTER_OTLP_TRACES_*` takes precedence over `OTEL_EXPORTER_OTLP_*`.
 - CLI flags still take precedence over environment variables.
 - `localhost:4317` is the common OTLP gRPC endpoint for an OTEL Collector.
@@ -136,11 +133,7 @@ go run ./cmd/tercios \
   --endpoint=http://localhost:4318/v1/traces \
   --exporters=50 \
   --max-requests=1000 \
-  --request-interval=0 \
-  --services=20 \
-  --max-depth=5 \
-  --max-spans=30 \
-  --error-rate=0.05
+  --request-interval=0
 ```
 
 Key options for stress tests:
@@ -151,6 +144,7 @@ Key options for stress tests:
 - `--for`: duration-based runs
 - `--ramp-up`: linearly ramp exporter workers over time (for gentler load warm-up)
 - `--header`: auth/custom headers
+- `--scenario-file`: custom trace topology (optional, uses embedded default otherwise)
 
 Before any non-dry-run load generation, Tercios runs an automatic exporter preflight check (a small connectivity probe) and exits early if it cannot reach the collector. This probe performs an empty OTLP export request (no spans).
 
@@ -185,25 +179,22 @@ Mutate generated traces with policies — inject errors, shift attributes, add l
 ```bash
 go run ./cmd/tercios \
   --dry-run -o json \
-  --chaos-policies-file=./examples/chaos-policies.json \
+  --chaos-policies-file=my-chaos.json \
   --chaos-seed=42 \
   --exporters=1 \
   --max-requests=10 \
-  --services=1 \
-  --service-name=post-service \
-  --error-rate=0 \
   2>/dev/null
 ```
 
 ---
 
-## 4) Scenario mode
+## 4) Custom scenarios
 
-Generate deterministic traces from topology definitions. See [docs/scenarios.md](docs/scenarios.md) for the full config format, edge kinds, and multi-scenario selection.
+Generate deterministic traces from custom topology definitions. Without `--scenario-file`, the embedded default scenario is used. See [docs/scenarios.md](docs/scenarios.md) for the full config format, edge kinds, and multi-scenario selection.
 
 ```bash
 go run ./cmd/tercios \
-  --scenario-file=./examples/scenario.json \
+  --scenario-file=my-scenario.json \
   --dry-run -o json \
   --exporters=1 \
   --max-requests=1 \
@@ -226,13 +217,7 @@ go run ./cmd/tercios \
 - `--for` duration in seconds
 - `--ramp-up` ramp-up duration in seconds (linearly ramps exporter workers)
 - `--export-timeout` per-export timeout in seconds (`0` disables per-export timeout)
-- `--services` number of distinct services
-- `--max-depth` max span depth
-- `--max-spans` max spans per trace
-- `--error-rate` probability (`0..1`) of generated error spans
-- `--service-name` base service name
-- `--span-name` base span name
-- `--scenario-file`, `-s` path to deterministic scenario JSON (repeatable)
+- `--scenario-file`, `-s` path to scenario JSON (repeatable; uses embedded default if omitted)
 - `--scenario-strategy` scenario selection strategy for multiple scenario files: `round-robin` or `random`
 - `--scenario-run-seed` trace/span ID namespace for scenario mode (`0` auto-random per process)
 - `--chaos-policies-file` path to chaos policy JSON
@@ -244,7 +229,8 @@ go run ./cmd/tercios \
 
 ---
 
-## JSON config example
+## Embedded default scenario
 
-`examples/config.json` shows the nested config shape used by `config.DecodeJSON`.
-See [docs/tls.md](docs/tls.md) for the TLS-related endpoint fields.
+When no `--scenario-file` is provided, Tercios uses a built-in 5-service web app scenario:
+`gateway → api → cache (redis) + db (postgres) + worker (kafka → db)`.
+See the [source](internal/scenario/default_scenario.json) for the full definition.

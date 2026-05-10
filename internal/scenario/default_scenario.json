@@ -1,0 +1,108 @@
+{
+  "name": "default-web-app",
+  "seed": 42,
+  "services": {
+    "gateway": {
+      "resource": {
+        "service.namespace": {"type": "string", "value": "default-app"},
+        "service.name": {"type": "string", "value": "api-gateway"},
+        "service.version": {"type": "string", "value": "1.4.0"}
+      }
+    },
+    "api": {
+      "resource": {
+        "service.namespace": {"type": "string", "value": "default-app"},
+        "service.name": {"type": "string", "value": "api-service"},
+        "service.version": {"type": "string", "value": "2.1.0"}
+      }
+    },
+    "cache": {
+      "resource": {
+        "service.namespace": {"type": "string", "value": "default-app"},
+        "service.name": {"type": "string", "value": "redis-cache"},
+        "service.version": {"type": "string", "value": "7.4"}
+      }
+    },
+    "db": {
+      "resource": {
+        "service.namespace": {"type": "string", "value": "default-app"},
+        "service.name": {"type": "string", "value": "postgres"},
+        "service.version": {"type": "string", "value": "16.2"}
+      }
+    },
+    "worker": {
+      "resource": {
+        "service.namespace": {"type": "string", "value": "default-app"},
+        "service.name": {"type": "string", "value": "background-worker"},
+        "service.version": {"type": "string", "value": "1.0.3"}
+      }
+    }
+  },
+  "nodes": {
+    "gateway": {"service": "gateway", "span_name": "GET /api/items"},
+    "api":     {"service": "api",     "span_name": "GET /items"},
+    "cache":   {"service": "cache",   "span_name": "GET items:list"},
+    "db":      {"service": "db",      "span_name": "SELECT items"},
+    "worker":  {"service": "worker",  "span_name": "Consume item.updated"}
+  },
+  "root": "gateway",
+  "edges": [
+    {
+      "from": "gateway",
+      "to": "api",
+      "kind": "client_server",
+      "repeat": 1,
+      "duration_ms": 45,
+      "span_attributes": {
+        "http.method": {"type": "string", "value": "GET"},
+        "http.route": {"type": "string", "value": "/items"},
+        "http.response.status_code": {"type": "int", "value": 200}
+      }
+    },
+    {
+      "from": "api",
+      "to": "cache",
+      "kind": "client_database",
+      "repeat": 3,
+      "duration_ms": 4,
+      "span_attributes": {
+        "db.system": {"type": "string", "value": "redis"},
+        "cache.hit": {"type": "bool", "value": true}
+      }
+    },
+    {
+      "from": "api",
+      "to": "db",
+      "kind": "client_database",
+      "repeat": 2,
+      "duration_ms": 25,
+      "span_attributes": {
+        "db.system": {"type": "string", "value": "postgresql"},
+        "db.name": {"type": "string", "value": "items"}
+      }
+    },
+    {
+      "from": "api",
+      "to": "worker",
+      "kind": "producer_consumer",
+      "repeat": 2,
+      "duration_ms": 8,
+      "span_attributes": {
+        "messaging.system": {"type": "string", "value": "kafka"},
+        "messaging.destination.name": {"type": "string", "value": "item.updated"},
+        "messaging.operation": {"type": "string", "value": "process"}
+      }
+    },
+    {
+      "from": "worker",
+      "to": "db",
+      "kind": "client_database",
+      "repeat": 1,
+      "duration_ms": 15,
+      "span_attributes": {
+        "db.system": {"type": "string", "value": "postgresql"},
+        "db.name": {"type": "string", "value": "items"}
+      }
+    }
+  ]
+}

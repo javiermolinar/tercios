@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/javiermolinar/tercios/internal/model"
-	"github.com/javiermolinar/tercios/internal/tracegen"
+	"github.com/javiermolinar/tercios/internal/scenario"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -20,8 +20,11 @@ func TestPipelineRunsWithConcurrencyAndGenerator(t *testing.T) {
 	var spans int64
 
 	runner := NewConcurrencyRunner(3, 5)
-	generator := &tracegen.Generator{ServiceName: "test", SpanName: "span", Services: 1, MaxDepth: 1, MaxSpans: 1}
-	pipe := New(NewGeneratorStage(generator))
+	defaultGen, err := scenario.DefaultGenerator(0)
+	if err != nil {
+		t.Fatalf("DefaultGenerator() error = %v", err)
+	}
+	pipe := New(NewScenarioStage(defaultGen))
 	factory := testBatchExporterFactory{calls: &calls, spans: &spans}
 
 	if err := pipe.Run(context.Background(), runner, factory, 0, 0, 0, 0, 0); err != nil {
@@ -29,10 +32,10 @@ func TestPipelineRunsWithConcurrencyAndGenerator(t *testing.T) {
 	}
 
 	if got := atomic.LoadInt64(&calls); got != 15 {
-		t.Fatalf("expected 15 export calls, got %d", got)
+		t.Fatalf("expected 15 export calls (3 exporters × 5 requests), got %d", got)
 	}
-	if got := atomic.LoadInt64(&spans); got != 15 {
-		t.Fatalf("expected 15 spans, got %d", got)
+	if got := atomic.LoadInt64(&spans); got == 0 {
+		t.Fatalf("expected spans, got 0")
 	}
 }
 

@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/javiermolinar/tercios/internal/model"
-	"github.com/javiermolinar/tercios/internal/tracegen"
+	"github.com/javiermolinar/tercios/internal/scenario"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -43,41 +43,6 @@ func TestParseDryRunOutput(t *testing.T) {
 				t.Fatalf("ParseDryRunOutput() = %q, want %q", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestDryRunJSONExporterWritesBatch(t *testing.T) {
-	spans, err := tracegen.Generator{
-		ServiceName: "svc",
-		SpanName:    "span",
-		Services:    1,
-		MaxDepth:    1,
-		MaxSpans:    1,
-	}.GenerateBatch(context.Background())
-	if err != nil {
-		t.Fatalf("GenerateBatch() error = %v", err)
-	}
-
-	var out bytes.Buffer
-	factory := NewDryRunExporterFactory(DryRunOutputJSON, &out)
-	exporter, err := factory.NewExporter(context.Background())
-	if err != nil {
-		t.Fatalf("NewExporter() error = %v", err)
-	}
-
-	if err := exporter.ExportSpans(context.Background(), spans); err != nil {
-		t.Fatalf("ExportSpans() error = %v", err)
-	}
-
-	var batch jsonBatch
-	if err := json.Unmarshal(out.Bytes(), &batch); err != nil {
-		t.Fatalf("invalid json output: %v", err)
-	}
-	if len(batch.Spans) != 1 {
-		t.Fatalf("expected 1 span in output, got %d", len(batch.Spans))
-	}
-	if batch.Spans[0].TraceID == "" {
-		t.Fatalf("expected trace_id in json output")
 	}
 }
 
@@ -137,27 +102,58 @@ func TestDryRunJSONBatchExporterWritesBatch(t *testing.T) {
 	}
 }
 
+func TestDryRunJSONExporterWritesDefaultScenarioBatch(t *testing.T) {
+	gen, err := scenario.DefaultGenerator(42)
+	if err != nil {
+		t.Fatalf("DefaultGenerator() error = %v", err)
+	}
+	spans, err := gen.GenerateBatch(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateBatch() error = %v", err)
+	}
+
+	var out bytes.Buffer
+	factory := NewDryRunExporterFactory(DryRunOutputJSON, &out)
+	exporter, err := factory.NewBatchExporter(context.Background())
+	if err != nil {
+		t.Fatalf("NewBatchExporter() error = %v", err)
+	}
+
+	if err := exporter.ExportBatch(context.Background(), spans); err != nil {
+		t.Fatalf("ExportBatch() error = %v", err)
+	}
+
+	var payload jsonBatch
+	if err := json.Unmarshal(out.Bytes(), &payload); err != nil {
+		t.Fatalf("invalid json output: %v", err)
+	}
+	if len(payload.Spans) == 0 {
+		t.Fatalf("expected spans in output")
+	}
+	if payload.Spans[0].TraceID == "" {
+		t.Fatalf("expected trace_id in json output")
+	}
+}
+
 func TestDryRunSummaryExporterDoesNotWrite(t *testing.T) {
-	spans, err := tracegen.Generator{
-		ServiceName: "svc",
-		SpanName:    "span",
-		Services:    1,
-		MaxDepth:    1,
-		MaxSpans:    1,
-	}.GenerateBatch(context.Background())
+	gen, err := scenario.DefaultGenerator(42)
+	if err != nil {
+		t.Fatalf("DefaultGenerator() error = %v", err)
+	}
+	spans, err := gen.GenerateBatch(context.Background())
 	if err != nil {
 		t.Fatalf("GenerateBatch() error = %v", err)
 	}
 
 	var out bytes.Buffer
 	factory := NewDryRunExporterFactory(DryRunOutputSummary, &out)
-	exporter, err := factory.NewExporter(context.Background())
+	exporter, err := factory.NewBatchExporter(context.Background())
 	if err != nil {
-		t.Fatalf("NewExporter() error = %v", err)
+		t.Fatalf("NewBatchExporter() error = %v", err)
 	}
 
-	if err := exporter.ExportSpans(context.Background(), spans); err != nil {
-		t.Fatalf("ExportSpans() error = %v", err)
+	if err := exporter.ExportBatch(context.Background(), spans); err != nil {
+		t.Fatalf("ExportBatch() error = %v", err)
 	}
 	if out.Len() != 0 {
 		t.Fatalf("expected no output for summary exporter, got %q", out.String())

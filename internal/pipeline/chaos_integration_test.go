@@ -2,15 +2,13 @@ package pipeline
 
 import (
 	"context"
-	"fmt"
-	"path/filepath"
-	"runtime"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/javiermolinar/tercios/internal/chaos"
 	"github.com/javiermolinar/tercios/internal/model"
+	"github.com/javiermolinar/tercios/internal/typedvalue"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
@@ -52,18 +50,33 @@ func (e *capturedBatchExporter) Shutdown(_ context.Context) error {
 	return nil
 }
 
-func TestPipelineAppliesExampleChaosPolicies(t *testing.T) {
-	cfg, err := loadExampleChaosConfig(t)
-	if err != nil {
-		t.Fatalf("load example chaos config: %v", err)
+func TestPipelineAppliesChaosPolicy(t *testing.T) {
+	cfg := chaos.Config{
+		Seed:       42,
+		PolicyMode: chaos.PolicyModeAll,
+		Policies: []chaos.Policy{{
+			Name:        "inject-errors",
+			Probability: 1,
+			Match:       chaos.Match{ServiceName: "post-service"},
+			Actions: []chaos.Action{
+				{
+					Type:    "set_status",
+					Code:    "error",
+					Message: "simulated failure",
+				},
+				{
+					Type:  "set_attribute",
+					Scope: "span",
+					Name:  "http.response.status_code",
+					Value: typedvalue.TypedValue{Type: "int", Value: int64(500)},
+				},
+				{
+					Type:    "add_latency",
+					DeltaMs: 120,
+				},
+			},
+		}},
 	}
-
-	// Keep the test deterministic: always apply first policy.
-	if len(cfg.Policies) == 0 {
-		t.Fatalf("expected policies in example config")
-	}
-	cfg.Policies[0].Probability = 1
-	cfg.Seed = 42
 
 	engine, err := chaos.NewEngine(cfg)
 	if err != nil {
@@ -111,25 +124,7 @@ func TestPipelineAppliesExampleChaosPolicies(t *testing.T) {
 	if span.StatusCode != codes.Error {
 		t.Fatalf("expected error status, got %s", span.StatusCode)
 	}
-	status := attributeValueFromMap(span.Attributes, "http.response.status_code")
-	if status != "500" {
-		t.Fatalf("expected http.response.status_code=500, got %s", status)
+	if status, ok := span.Attributes["http.response.status_code"]; !ok || status.Emit() != "500" {
+		t.Fatalf("expected http.response.status_code=500, got %s", status.Emit())
 	}
-}
-
-func loadExampleChaosConfig(t *testing.T) (chaos.Config, error) {
-	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		return chaos.Config{}, fmt.Errorf("runtime caller not available")
-	}
-	root := filepath.Join(filepath.Dir(file), "..", "..")
-	return chaos.LoadFromJSON(filepath.Join(root, "examples", "chaos-policies.json"))
-}
-
-func attributeValueFromMap(attributes map[string]attribute.Value, key string) string {
-	if value, ok := attributes[key]; ok {
-		return value.Emit()
-	}
-	return ""
 }

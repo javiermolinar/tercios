@@ -9,13 +9,10 @@ This is **not** infrastructure chaos (no pods/nodes/network failures). It is tel
 ```bash
 go run ./cmd/tercios \
   --dry-run -o json \
-  --chaos-policies-file=./examples/chaos-policies.json \
+  --chaos-policies-file=my-chaos.json \
   --chaos-seed=42 \
   --exporters=1 \
   --max-requests=10 \
-  --services=1 \
-  --service-name=post-service \
-  --error-rate=0 \
   2>/dev/null
 ```
 
@@ -28,9 +25,8 @@ go run ./cmd/tercios \
 
 Tips:
 - Use `--dry-run -o json` to inspect mutated spans locally before sending to a collector.
-- Use `--service-name` to guarantee policy selectors match generated spans.
-- Set `--error-rate=0` when you want policy-driven errors only.
-- Chaos composes on top of both random generation and scenario mode.
+- Chaos composes on top of both the embedded default scenario and custom scenarios.
+- Match on `service_name` values from your scenario definition (e.g., `"api-service"` for the embedded default).
 
 ## Policy config format
 
@@ -182,4 +178,4 @@ Latency safety: if the delta would produce a non-positive duration, the span is 
 }
 ```
 
-See also: [examples/chaos-policies.json](../examples/chaos-policies.json), [examples/chaos-regression-payment.json](../examples/chaos-regression-payment.json)
+The embedded default scenario uses these service names: `api-gateway`, `api-service`, `redis-cache`, `postgres`, `background-worker`.

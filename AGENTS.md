@@ -6,8 +6,8 @@ This is a Go CLI for OTLP load testing (traces). Key locations:
 
 - `cmd/tercios/` entrypoint and CLI flag wiring.
 - `internal/config/` configuration types and validation.
-- `internal/pipeline/` composable pipeline stages (concurrency, generator).
-- `internal/tracegen/` trace generator implementation.
+- `internal/pipeline/` composable pipeline stages (concurrency, scenario, chaos).
+- `internal/scenario/` scenario definitions, generator, and embedded default.
 - `internal/otlp/` OTLP exporter factory (gRPC/HTTP, headers, endpoint parsing).
 - `tools/` Go tools module (golangci-lint).
 - `vendor/` vendored dependencies (OTLP exporter and friends).
@@ -36,13 +36,13 @@ go run ./cmd/tercios --protocol=http --endpoint=http://localhost:4318/v1/traces 
 
 - Format with `gofmt` (Go defaults).
 - Lint with `golangci-lint` (`make lint`).
-- Keep names explicit (`RequestsPerExporter`, `TraceGeneratorStage`) and avoid abbreviations unless standard.
+- Keep names explicit (`RequestsPerExporter`, `ScenarioStage`) and avoid abbreviations unless standard.
 
 ## Testing Guidelines
 
 - Tests live alongside code using Go’s `*_test.go` convention.
 - Run with `make test` (or `go test ./...`).
-- Focus on deterministic unit tests; the pipeline and generator tests should not rely on networked OTLP endpoints.
+- Focus on deterministic unit tests; the pipeline and scenario tests should not rely on networked OTLP endpoints.
 
 ## Commit & Pull Request Guidelines
 
