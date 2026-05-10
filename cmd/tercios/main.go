@@ -72,7 +72,7 @@ func main() {
 	flag.Float64Var(&slowResponseDelaySeconds, "slow-response-delay", 0, "seconds to delay reading each HTTP response body, simulating a slow client (HTTP only, 0 disables)")
 	flag.Parse()
 	if flag.NFlag() == 0 {
-		fmt.Fprintln(os.Stderr, "error: no arguments provided; use --dry-run to generate locally or -h for help")
+		usage()
 		os.Exit(2)
 	}
 	setFlags := map[string]struct{}{}
