@@ -224,6 +224,137 @@ func TestDecodeJSONWithStringSizeAttribute(t *testing.T) {
 	}
 }
 
+func TestDecodeJSONWithEventsAndLinks(t *testing.T) {
+	input := `{
+  "name": "events-links-test",
+  "seed": 1,
+  "services": {
+    "svc": { "resource": { "service.name": { "type": "string", "value": "svc" } } }
+  },
+  "nodes": {
+    "a": { "service": "svc", "span_name": "A" },
+    "b": { "service": "svc", "span_name": "B" },
+    "c": { "service": "svc", "span_name": "C" }
+  },
+  "root": "a",
+  "edges": [
+    {
+      "from": "a",
+      "to": "b",
+      "kind": "internal",
+      "repeat": 1,
+      "duration_ms": 10,
+      "span_events": [
+        {
+          "name": "cache.miss",
+          "attributes": {
+            "cache.key": { "type": "string", "value": "items:list" }
+          }
+        }
+      ],
+      "span_links": [
+        {
+          "node": "a",
+          "attributes": {
+            "link.type": { "type": "string", "value": "follows_from" }
+          }
+        }
+      ]
+    },
+    {
+      "from": "b",
+      "to": "c",
+      "kind": "internal",
+      "repeat": 1,
+      "duration_ms": 5
+    }
+  ]
+}`
+
+	cfg, err := DecodeJSON(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("DecodeJSON() error = %v", err)
+	}
+
+	definition, err := cfg.Build()
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	if len(definition.Edges[0].SpanEvents) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(definition.Edges[0].SpanEvents))
+	}
+	if definition.Edges[0].SpanEvents[0].Name != "cache.miss" {
+		t.Fatalf("expected event name cache.miss, got %q", definition.Edges[0].SpanEvents[0].Name)
+	}
+	if len(definition.Edges[0].SpanLinks) != 1 {
+		t.Fatalf("expected 1 link, got %d", len(definition.Edges[0].SpanLinks))
+	}
+	if definition.Edges[0].SpanLinks[0].Node != "a" {
+		t.Fatalf("expected link node a, got %q", definition.Edges[0].SpanLinks[0].Node)
+	}
+}
+
+func TestDecodeJSONRejectsLinkToUnknownNode(t *testing.T) {
+	input := `{
+  "name": "bad-link",
+  "seed": 1,
+  "services": {
+    "svc": { "resource": { "service.name": { "type": "string", "value": "svc" } } }
+  },
+  "nodes": {
+    "a": { "service": "svc", "span_name": "A" },
+    "b": { "service": "svc", "span_name": "B" }
+  },
+  "root": "a",
+  "edges": [
+    {
+      "from": "a",
+      "to": "b",
+      "kind": "internal",
+      "repeat": 1,
+      "duration_ms": 10,
+      "span_links": [{ "node": "nonexistent" }]
+    }
+  ]
+}`
+
+	_, err := DecodeJSON(strings.NewReader(input))
+	if err == nil {
+		t.Fatalf("expected error for link to unknown node")
+	}
+}
+
+func TestDecodeJSONRejectsEventWithoutName(t *testing.T) {
+	input := `{
+  "name": "bad-event",
+  "seed": 1,
+  "services": {
+    "svc": { "resource": { "service.name": { "type": "string", "value": "svc" } } }
+  },
+  "nodes": {
+    "a": { "service": "svc", "span_name": "A" },
+    "b": { "service": "svc", "span_name": "B" }
+  },
+  "root": "a",
+  "edges": [
+    {
+      "from": "a",
+      "to": "b",
+      "kind": "internal",
+      "repeat": 1,
+      "duration_ms": 10,
+      "span_events": [{ "name": "" }]
+    }
+  ]
+}`
+
+	_, err := DecodeJSON(strings.NewReader(input))
+	if err == nil {
+		t.Fatalf("expected error for event without name")
+	}
+}
+
 func TestDecodeJSONRejectsUnknownNodeService(t *testing.T) {
 	input := `{
   "name": "unknown-service",

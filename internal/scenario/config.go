@@ -44,6 +44,16 @@ type NodeConfig struct {
 	SpanName string `json:"span_name"`
 }
 
+type EventConfig struct {
+	Name       string                `json:"name"`
+	Attributes map[string]TypedValue `json:"attributes,omitempty"`
+}
+
+type LinkConfig struct {
+	Node       string                `json:"node"`
+	Attributes map[string]TypedValue `json:"attributes,omitempty"`
+}
+
 type EdgeConfig struct {
 	From           string                `json:"from"`
 	To             string                `json:"to"`
@@ -51,6 +61,8 @@ type EdgeConfig struct {
 	Repeat         int                   `json:"repeat"`
 	DurationMs     int64                 `json:"duration_ms"`
 	SpanAttributes map[string]TypedValue `json:"span_attributes,omitempty"`
+	SpanEvents     []EventConfig         `json:"span_events,omitempty"`
+	SpanLinks      []LinkConfig          `json:"span_links,omitempty"`
 }
 
 type Config struct {
@@ -155,6 +167,29 @@ func (c Config) Validate() error {
 		for key, value := range edge.SpanAttributes {
 			if err := value.Validate(fmt.Sprintf("edge %d span attribute %q", i, key)); err != nil {
 				return err
+			}
+		}
+		for j, event := range edge.SpanEvents {
+			if strings.TrimSpace(event.Name) == "" {
+				return fmt.Errorf("edge %d event %d: name is required", i, j)
+			}
+			for key, value := range event.Attributes {
+				if err := value.Validate(fmt.Sprintf("edge %d event %d attribute %q", i, j, key)); err != nil {
+					return err
+				}
+			}
+		}
+		for j, link := range edge.SpanLinks {
+			if strings.TrimSpace(link.Node) == "" {
+				return fmt.Errorf("edge %d link %d: node is required", i, j)
+			}
+			if _, ok := c.Nodes[link.Node]; !ok {
+				return fmt.Errorf("edge %d link %d: unknown node %q", i, j, link.Node)
+			}
+			for key, value := range link.Attributes {
+				if err := value.Validate(fmt.Sprintf("edge %d link %d attribute %q", i, j, key)); err != nil {
+					return err
+				}
 			}
 		}
 	}

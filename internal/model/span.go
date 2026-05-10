@@ -6,9 +6,21 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
+
+// Link is the relationship between two Spans.
+type Link struct {
+	SpanContext oteltrace.SpanContext
+	Attributes  []attribute.KeyValue
+}
+
+// Event is a thing that happened during a Span's lifetime.
+type Event struct {
+	Name       string
+	Time       time.Time
+	Attributes []attribute.KeyValue
+}
 
 type Span struct {
 	TraceID      oteltrace.TraceID
@@ -23,8 +35,8 @@ type Span struct {
 	Attributes         map[string]attribute.Value
 	ResourceAttributes map[string]attribute.Value
 
-	Links  []sdktrace.Link
-	Events []sdktrace.Event
+	Links  []Link
+	Events []Event
 
 	StatusCode        codes.Code
 	StatusDescription string

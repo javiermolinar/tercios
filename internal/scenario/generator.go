@@ -42,6 +42,7 @@ func (g *Generator) GenerateBatch(_ context.Context) ([]model.Span, error) {
 	sequence := g.counter.Add(1)
 	traceID := traceIDFromSeed(g.definition.Seed, sequence)
 	idState := newSpanIDState(g.definition.Seed, sequence)
+	nodeSpans := make(map[string]oteltrace.SpanID)
 
 	estimated := estimateDuration(g.definition.Root, g.outgoing)
 	if estimated <= 0 {
@@ -54,11 +55,13 @@ func (g *Generator) GenerateBatch(_ context.Context) ([]model.Span, error) {
 		return nil, fmt.Errorf("root node %q not found", g.definition.Root)
 	}
 
-	rootSpan := g.newSpan(traceID, idState.next(), oteltrace.SpanID{}, rootNode, oteltrace.SpanKindInternal, base, estimated, nil)
+	rootSpanID := idState.next()
+	rootSpan := g.newSpan(traceID, rootSpanID, oteltrace.SpanID{}, rootNode, oteltrace.SpanKindInternal, base, estimated, nil, nil, nil)
+	nodeSpans[g.definition.Root] = rootSpanID
 	spans := []model.Span{rootSpan}
 
 	cursor := base.Add(1 * time.Millisecond)
-	spans = g.emitFromNode(spans, traceID, rootSpan.SpanID, g.definition.Root, &cursor, idState)
+	spans = g.emitFromNode(spans, traceID, rootSpan.SpanID, g.definition.Root, &cursor, idState, nodeSpans)
 	return spans, nil
 }
 
@@ -90,6 +93,7 @@ func (g *Generator) emitFromNode(
 	nodeID string,
 	cursor *time.Time,
 	idState *spanIDState,
+	nodeSpans map[string]oteltrace.SpanID,
 ) []model.Span {
 	edges := g.outgoing[nodeID]
 	if len(edges) == 0 {
@@ -97,6 +101,9 @@ func (g *Generator) emitFromNode(
 	}
 
 	for _, edge := range edges {
+		links := resolveLinks(traceID, edge.SpanLinks, nodeSpans)
+		events := resolveEvents(edge.SpanEvents)
+
 		for i := 0; i < edge.Repeat; i++ {
 			sourceNode := g.definition.Nodes[edge.From]
 			targetNode := g.definition.Nodes[edge.To]
@@ -108,44 +115,55 @@ func (g *Generator) emitFromNode(
 
 			switch edge.Kind {
 			case EdgeKindClientServer:
-				clientSpan := g.newSpan(traceID, idState.next(), parentSpanID, sourceNode, oteltrace.SpanKindClient, start, duration, edge.SpanAttributes)
+				clientID := idState.next()
+				clientSpan := g.newSpan(traceID, clientID, parentSpanID, sourceNode, oteltrace.SpanKindClient, start, duration, edge.SpanAttributes, events, links)
 				clientSpan.Name = edgeSpanName(sourceNode, targetNode)
 				spans = append(spans, clientSpan)
 
-				serverSpan := g.newSpan(traceID, idState.next(), clientSpan.SpanID, targetNode, oteltrace.SpanKindServer, start, duration, edge.SpanAttributes)
+				serverID := idState.next()
+				serverSpan := g.newSpan(traceID, serverID, clientSpan.SpanID, targetNode, oteltrace.SpanKindServer, start, duration, edge.SpanAttributes, nil, nil)
+				nodeSpans[edge.To] = serverID
 				spans = append(spans, serverSpan)
 
 				*cursor = serverSpan.EndTime.Add(1 * time.Millisecond)
-				spans = g.emitFromNode(spans, traceID, serverSpan.SpanID, edge.To, cursor, idState)
+				spans = g.emitFromNode(spans, traceID, serverSpan.SpanID, edge.To, cursor, idState, nodeSpans)
 
 			case EdgeKindProducerConsumer:
-				producerSpan := g.newSpan(traceID, idState.next(), parentSpanID, sourceNode, oteltrace.SpanKindProducer, start, duration, edge.SpanAttributes)
+				producerID := idState.next()
+				producerSpan := g.newSpan(traceID, producerID, parentSpanID, sourceNode, oteltrace.SpanKindProducer, start, duration, edge.SpanAttributes, events, links)
 				producerSpan.Name = edgeSpanName(sourceNode, targetNode)
 				spans = append(spans, producerSpan)
 
-				consumerSpan := g.newSpan(traceID, idState.next(), producerSpan.SpanID, targetNode, oteltrace.SpanKindConsumer, start, duration, edge.SpanAttributes)
+				consumerID := idState.next()
+				consumerSpan := g.newSpan(traceID, consumerID, producerSpan.SpanID, targetNode, oteltrace.SpanKindConsumer, start, duration, edge.SpanAttributes, nil, nil)
+				nodeSpans[edge.To] = consumerID
 				spans = append(spans, consumerSpan)
 
 				*cursor = consumerSpan.EndTime.Add(1 * time.Millisecond)
-				spans = g.emitFromNode(spans, traceID, consumerSpan.SpanID, edge.To, cursor, idState)
+				spans = g.emitFromNode(spans, traceID, consumerSpan.SpanID, edge.To, cursor, idState, nodeSpans)
 
 			case EdgeKindClientDatabase:
-				clientSpan := g.newSpan(traceID, idState.next(), parentSpanID, sourceNode, oteltrace.SpanKindClient, start, duration, edge.SpanAttributes)
+				clientID := idState.next()
+				clientSpan := g.newSpan(traceID, clientID, parentSpanID, sourceNode, oteltrace.SpanKindClient, start, duration, edge.SpanAttributes, events, links)
 				clientSpan.Name = edgeSpanName(sourceNode, targetNode)
 				spans = append(spans, clientSpan)
 
-				dbSpan := g.newSpan(traceID, idState.next(), clientSpan.SpanID, targetNode, oteltrace.SpanKindServer, start, duration, edge.SpanAttributes)
+				dbID := idState.next()
+				dbSpan := g.newSpan(traceID, dbID, clientSpan.SpanID, targetNode, oteltrace.SpanKindServer, start, duration, edge.SpanAttributes, nil, nil)
+				nodeSpans[edge.To] = dbID
 				spans = append(spans, dbSpan)
 
 				*cursor = dbSpan.EndTime.Add(1 * time.Millisecond)
-				spans = g.emitFromNode(spans, traceID, dbSpan.SpanID, edge.To, cursor, idState)
+				spans = g.emitFromNode(spans, traceID, dbSpan.SpanID, edge.To, cursor, idState, nodeSpans)
 
 			case EdgeKindInternal:
-				internalSpan := g.newSpan(traceID, idState.next(), parentSpanID, targetNode, oteltrace.SpanKindInternal, start, duration, edge.SpanAttributes)
+				internalID := idState.next()
+				internalSpan := g.newSpan(traceID, internalID, parentSpanID, targetNode, oteltrace.SpanKindInternal, start, duration, edge.SpanAttributes, events, links)
+				nodeSpans[edge.To] = internalID
 				spans = append(spans, internalSpan)
 
 				*cursor = internalSpan.EndTime.Add(1 * time.Millisecond)
-				spans = g.emitFromNode(spans, traceID, internalSpan.SpanID, edge.To, cursor, idState)
+				spans = g.emitFromNode(spans, traceID, internalSpan.SpanID, edge.To, cursor, idState, nodeSpans)
 			}
 		}
 	}
@@ -162,6 +180,8 @@ func (g *Generator) newSpan(
 	start time.Time,
 	duration time.Duration,
 	edgeAttrs map[string]attribute.Value,
+	events []model.Event,
+	links []model.Link,
 ) model.Span {
 	service := g.definition.Services[node.Service]
 	resourceAttrs := cloneAttributeValues(service.ResourceAttributes)
@@ -181,7 +201,7 @@ func (g *Generator) newSpan(
 		duration = 1 * time.Millisecond
 	}
 
-	return model.Span{
+	span := model.Span{
 		TraceID:            traceID,
 		SpanID:             spanID,
 		ParentSpanID:       parentSpanID,
@@ -192,7 +212,46 @@ func (g *Generator) newSpan(
 		Attributes:         attrs,
 		ResourceAttributes: resourceAttrs,
 		StatusCode:         codes.Ok,
+		Events:             events,
+		Links:              links,
 	}
+	return span
+}
+
+func resolveEvents(defs []EventDef) []model.Event {
+	if len(defs) == 0 {
+		return nil
+	}
+	out := make([]model.Event, len(defs))
+	for i, def := range defs {
+		out[i] = model.Event{
+			Name:       def.Name,
+			Attributes: def.Attributes,
+		}
+	}
+	return out
+}
+
+func resolveLinks(traceID oteltrace.TraceID, defs []LinkDef, nodeSpans map[string]oteltrace.SpanID) []model.Link {
+	if len(defs) == 0 {
+		return nil
+	}
+	out := make([]model.Link, 0, len(defs))
+	for _, def := range defs {
+		spanID, ok := nodeSpans[def.Node]
+		if !ok {
+			continue
+		}
+		out = append(out, model.Link{
+			SpanContext: oteltrace.NewSpanContext(oteltrace.SpanContextConfig{
+				TraceID:    traceID,
+				SpanID:     spanID,
+				TraceFlags: oteltrace.FlagsSampled,
+			}),
+			Attributes: def.Attributes,
+		})
+	}
+	return out
 }
 
 func edgeSpanName(from Node, to Node) string {

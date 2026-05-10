@@ -95,6 +95,74 @@ func testDefinition(t *testing.T) Definition {
 	return definition
 }
 
+func TestGeneratorEmitsEventsAndLinks(t *testing.T) {
+	cfg := Config{
+		Name: "events-links",
+		Seed: 42,
+		Services: map[string]ServiceConfig{
+			"svc": {Resource: map[string]TypedValue{"service.name": {Type: ValueTypeString, Value: "svc"}}},
+		},
+		Nodes: map[string]NodeConfig{
+			"a": {Service: "svc", SpanName: "A"},
+			"b": {Service: "svc", SpanName: "B"},
+		},
+		Root: "a",
+		Edges: []EdgeConfig{
+			{
+				From: "a", To: "b", Kind: EdgeKindInternal, Repeat: 1, DurationMs: 10,
+				SpanEvents: []EventConfig{
+					{Name: "cache.miss", Attributes: map[string]TypedValue{
+						"cache.key": {Type: ValueTypeString, Value: "items:list"},
+					}},
+				},
+				SpanLinks: []LinkConfig{
+					{Node: "a", Attributes: map[string]TypedValue{
+						"link.type": {Type: ValueTypeString, Value: "follows_from"},
+					}},
+				},
+			},
+		},
+	}
+	definition, err := cfg.Build()
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	generator := NewGenerator(definition)
+
+	spans, err := generator.GenerateBatch(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateBatch() error = %v", err)
+	}
+
+	// Find the span with events (the internal span from edge a->b)
+	foundEvent := false
+	foundLink := false
+	for _, span := range spans {
+		for _, event := range span.Events {
+			if event.Name == "cache.miss" {
+				foundEvent = true
+				if len(event.Attributes) == 0 {
+					t.Fatalf("expected event attributes")
+				}
+			}
+		}
+		for _, link := range span.Links {
+			if link.SpanContext.IsValid() {
+				foundLink = true
+				if len(link.Attributes) == 0 {
+					t.Fatalf("expected link attributes")
+				}
+			}
+		}
+	}
+	if !foundEvent {
+		t.Fatalf("expected at least one span with cache.miss event")
+	}
+	if !foundLink {
+		t.Fatalf("expected at least one span with a link to node a")
+	}
+}
+
 func TestEstimateDurationPositive(t *testing.T) {
 	outgoing := map[string][]Edge{
 		"a": {{From: "a", To: "b", Repeat: 2, Duration: 10 * time.Millisecond}},

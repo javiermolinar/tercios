@@ -6,7 +6,7 @@ IMAGE_TAG ?= latest
 DOCKER_PLATFORMS ?= linux/amd64
 DOCKER_BUILDX_FLAGS ?= --load
 
-.PHONY: build test lint vendor tidy run docker-build docker-run docker-buildx
+.PHONY: build test lint tidy run docker-build docker-run docker-buildx
 
 build:
 	mkdir -p $(BIN_DIR)
@@ -17,10 +17,6 @@ test:
 
 lint:
 	go run -modfile=tools/go.mod github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
-
-vendor:
-	go mod tidy
-	go mod vendor
 
 tidy:
 	go mod tidy

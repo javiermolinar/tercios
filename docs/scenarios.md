@@ -122,6 +122,8 @@ Edges define the call graph between nodes.
 | `repeat` | int | **Required.** Number of times to repeat this call (must be > 0) |
 | `duration_ms` | int | **Required.** Span duration in milliseconds (must be > 0) |
 | `span_attributes` | map | Optional span attributes using [typed values](typed-values.md) |
+| `span_events` | array | Optional span events (see below) |
+| `span_links` | array | Optional span links (see below) |
 
 ### Edge kinds
 
@@ -131,6 +133,46 @@ Edges define the call graph between nodes.
 | `producer_consumer` | Producer span + Consumer span |
 | `client_database` | Client span + Server span (database) |
 | `internal` | Single internal span on the target node |
+
+### Span events
+
+Events are things that happened during a span's lifetime.
+
+```json
+"span_events": [
+  {
+    "name": "cache.miss",
+    "attributes": {
+      "cache.key": {"type": "string", "value": "items:list"}
+    }
+  }
+]
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | **Required.** Event name |
+| `attributes` | map | Optional event attributes using [typed values](typed-values.md) |
+
+### Span links
+
+Links reference spans from other nodes in the same trace. The linked node must have been visited earlier in the DAG traversal.
+
+```json
+"span_links": [
+  {
+    "node": "gateway",
+    "attributes": {
+      "link.type": {"type": "string", "value": "follows_from"}
+    }
+  }
+]
+```
+
+| Field | Type | Description |
+|---|---|---|
+| `node` | string | **Required.** Node ID to link to (must exist in `nodes`) |
+| `attributes` | map | Optional link attributes using [typed values](typed-values.md) |
 
 ### Topology constraints
 

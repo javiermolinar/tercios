@@ -7,7 +7,6 @@ import (
 	"github.com/javiermolinar/tercios/internal/model"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	oteltrace "go.opentelemetry.io/otel/trace"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
@@ -73,7 +72,7 @@ func modelSpanToProto(span model.Span) *tracepb.Span {
 	return pb
 }
 
-func linksToProto(links []sdktrace.Link) []*tracepb.Span_Link {
+func linksToProto(links []model.Link) []*tracepb.Span_Link {
 	if len(links) == 0 {
 		return nil
 	}
@@ -83,27 +82,25 @@ func linksToProto(links []sdktrace.Link) []*tracepb.Span_Link {
 		traceID := sc.TraceID()
 		spanID := sc.SpanID()
 		out = append(out, &tracepb.Span_Link{
-			TraceId:                append([]byte(nil), traceID[:]...),
-			SpanId:                 append([]byte(nil), spanID[:]...),
-			TraceState:             sc.TraceState().String(),
-			Attributes:             keyValuesToProto(link.Attributes),
-			DroppedAttributesCount: uint32(link.DroppedAttributeCount),
+			TraceId:    append([]byte(nil), traceID[:]...),
+			SpanId:     append([]byte(nil), spanID[:]...),
+			TraceState: sc.TraceState().String(),
+			Attributes: keyValuesToProto(link.Attributes),
 		})
 	}
 	return out
 }
 
-func eventsToProto(events []sdktrace.Event) []*tracepb.Span_Event {
+func eventsToProto(events []model.Event) []*tracepb.Span_Event {
 	if len(events) == 0 {
 		return nil
 	}
 	out := make([]*tracepb.Span_Event, 0, len(events))
 	for _, event := range events {
 		out = append(out, &tracepb.Span_Event{
-			TimeUnixNano:           uint64(event.Time.UnixNano()),
-			Name:                   event.Name,
-			Attributes:             keyValuesToProto(event.Attributes),
-			DroppedAttributesCount: uint32(event.DroppedAttributeCount),
+			TimeUnixNano: uint64(event.Time.UnixNano()),
+			Name:         event.Name,
+			Attributes:   keyValuesToProto(event.Attributes),
 		})
 	}
 	return out

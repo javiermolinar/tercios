@@ -10,7 +10,6 @@ This is a Go CLI for OTLP load testing (traces). Key locations:
 - `internal/scenario/` scenario definitions, generator, and embedded default.
 - `internal/otlp/` OTLP exporter factory (gRPC/HTTP, headers, endpoint parsing).
 - `tools/` Go tools module (golangci-lint).
-- `vendor/` vendored dependencies (OTLP exporter and friends).
 
 Add new pipeline features as stages under `internal/pipeline/` and register them in the CLI in `cmd/tercios/main.go`.
 
