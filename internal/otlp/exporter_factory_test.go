@@ -108,12 +108,12 @@ func TestMergedTLSConfig_FallsBackToGenericEnvClientCertificateWhenTraceSpecific
 	}
 }
 
-func TestNewExporter_HonorsTLSConfigForHTTP(t *testing.T) {
+func TestNewBatchExporter_HonorsTLSConfigForHTTP(t *testing.T) {
 	_, err := (ExporterFactory{
 		Protocol:  config.ProtocolHTTP,
 		Endpoint:  "https://localhost:4318/v1/traces",
 		TLSCACert: filepath.Join(t.TempDir(), "missing-ca.pem"),
-	}).NewExporter(context.Background())
+	}).NewBatchExporter(context.Background())
 	if err == nil {
 		t.Fatalf("expected error, got nil")
 	}
@@ -122,12 +122,12 @@ func TestNewExporter_HonorsTLSConfigForHTTP(t *testing.T) {
 	}
 }
 
-func TestNewExporter_HonorsTLSConfigForGRPC(t *testing.T) {
+func TestNewBatchExporter_HonorsTLSConfigForGRPC(t *testing.T) {
 	_, err := (ExporterFactory{
 		Protocol:  config.ProtocolGRPC,
 		Endpoint:  "localhost:4317",
 		TLSCACert: filepath.Join(t.TempDir(), "missing-ca.pem"),
-	}).NewExporter(context.Background())
+	}).NewBatchExporter(context.Background())
 	if err == nil {
 		t.Fatalf("expected error, got nil")
 	}

@@ -1,7 +1,6 @@
 package otlp
 
 import (
-	"context"
 	"encoding/binary"
 	"fmt"
 	"testing"
@@ -12,22 +11,6 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
-
-func BenchmarkModelExportPath_ToReadOnlySpans(b *testing.B) {
-	benchmarkModelBatchSizes(b, func(b *testing.B, batch model.Batch) {
-		ctx := context.Background()
-		b.ResetTimer()
-		for i := 0; i < b.N; i++ {
-			spans, err := batch.ToReadOnlySpans(ctx)
-			if err != nil {
-				b.Fatalf("ToReadOnlySpans() error = %v", err)
-			}
-			if len(spans) != len(batch) {
-				b.Fatalf("expected %d spans, got %d", len(batch), len(spans))
-			}
-		}
-	})
-}
 
 func BenchmarkModelExportPath_ToProto(b *testing.B) {
 	benchmarkModelBatchSizes(b, func(b *testing.B, batch model.Batch) {

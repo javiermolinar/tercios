@@ -1,7 +1,6 @@
 package otlp
 
 import (
-	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
@@ -11,10 +10,6 @@ import (
 	"time"
 
 	"github.com/javiermolinar/tercios/internal/config"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	"go.opentelemetry.io/otel/sdk/trace"
-	"google.golang.org/grpc/credentials"
 )
 
 const (
@@ -138,43 +133,6 @@ func lookupNonEmptyEnv(lookupEnv func(string) (string, bool), key string) (strin
 		return "", false
 	}
 	return value, true
-}
-
-func (f ExporterFactory) NewExporter(ctx context.Context) (trace.SpanExporter, error) {
-	endpoint, path, err := parseEndpoint(f.Endpoint)
-	if err != nil {
-		return nil, err
-	}
-	if f.Protocol == config.ProtocolHTTP {
-		options := []otlptracehttp.Option{otlptracehttp.WithEndpoint(endpoint)}
-		if f.Insecure {
-			options = append(options, otlptracehttp.WithInsecure())
-		} else if tlsCfg, err := f.tlsConfig(); err != nil {
-			return nil, err
-		} else if tlsCfg != nil {
-			options = append(options, otlptracehttp.WithTLSClientConfig(tlsCfg))
-		}
-		if path != "" {
-			options = append(options, otlptracehttp.WithURLPath(path))
-		}
-		if len(f.Headers) > 0 {
-			options = append(options, otlptracehttp.WithHeaders(f.Headers))
-		}
-		return otlptracehttp.New(ctx, options...)
-	}
-
-	options := []otlptracegrpc.Option{otlptracegrpc.WithEndpoint(endpoint)}
-	if f.Insecure {
-		options = append(options, otlptracegrpc.WithInsecure())
-	} else if tlsCfg, err := f.tlsConfig(); err != nil {
-		return nil, err
-	} else if tlsCfg != nil {
-		options = append(options, otlptracegrpc.WithTLSCredentials(credentials.NewTLS(tlsCfg)))
-	}
-	if len(f.Headers) > 0 {
-		options = append(options, otlptracegrpc.WithHeaders(f.Headers))
-	}
-	return otlptracegrpc.New(ctx, options...)
 }
 
 func parseEndpoint(raw string) (endpoint string, path string, err error) {

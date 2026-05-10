@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/javiermolinar/tercios/internal/model"
-	"go.opentelemetry.io/otel/sdk/trace"
 	grpccodes "google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -279,28 +278,6 @@ func Summarize(stats []*Stats) Summary {
 	summary.P95Latency = durations[int(float64(len(durations)-1)*0.95)]
 	populateDerivedSummary(&summary)
 	return summary
-}
-
-type InstrumentedExporter struct {
-	inner trace.SpanExporter
-	stats *Stats
-}
-
-func NewInstrumentedExporter(inner trace.SpanExporter, stats *Stats) *InstrumentedExporter {
-	return &InstrumentedExporter{inner: inner, stats: stats}
-}
-
-func (e *InstrumentedExporter) ExportSpans(ctx context.Context, spans []trace.ReadOnlySpan) error {
-	start := time.Now()
-	err := e.inner.ExportSpans(ctx, spans)
-	if e.stats != nil {
-		e.stats.Record(time.Since(start), err)
-	}
-	return err
-}
-
-func (e *InstrumentedExporter) Shutdown(ctx context.Context) error {
-	return e.inner.Shutdown(ctx)
 }
 
 type InstrumentedBatchExporter struct {

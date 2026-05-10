@@ -1,8 +1,6 @@
 package model
 
 import (
-	"context"
-	"fmt"
 	"sort"
 	"time"
 
@@ -33,21 +31,6 @@ type Span struct {
 }
 
 type Batch []Span
-
-func (s Span) ToReadOnlySpan(ctx context.Context) (sdktrace.ReadOnlySpan, error) {
-	spans, err := Batch{s}.ToReadOnlySpans(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if len(spans) == 0 {
-		return nil, fmt.Errorf("span conversion returned empty batch")
-	}
-	return spans[0], nil
-}
-
-func (b Batch) ToReadOnlySpans(ctx context.Context) ([]sdktrace.ReadOnlySpan, error) {
-	return toReadOnlySpans(ctx, []Span(b))
-}
 
 func AttributesToMap(attributes []attribute.KeyValue) map[string]attribute.Value {
 	if len(attributes) == 0 {
