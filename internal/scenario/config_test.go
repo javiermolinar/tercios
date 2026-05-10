@@ -179,6 +179,51 @@ func TestDecodeJSONWithArrayAttributes(t *testing.T) {
 	}
 }
 
+func TestDecodeJSONWithStringSizeAttribute(t *testing.T) {
+	input := `{
+  "name": "blob-test",
+  "seed": 1,
+  "services": {
+    "svc": { "resource": { "service.name": { "type": "string", "value": "svc" } } }
+  },
+  "nodes": {
+    "a": { "service": "svc", "span_name": "A" },
+    "b": { "service": "svc", "span_name": "B" }
+  },
+  "root": "a",
+  "edges": [
+    {
+      "from": "a",
+      "to": "b",
+      "kind": "internal",
+      "repeat": 1,
+      "duration_ms": 10,
+      "span_attributes": {
+        "http.request.body": { "type": "string", "size": 2048 }
+      }
+    }
+  ]
+}`
+
+	cfg, err := DecodeJSON(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("DecodeJSON() error = %v", err)
+	}
+
+	definition, err := cfg.Build()
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	body := definition.Edges[0].SpanAttributes["http.request.body"]
+	if body.Type() != attribute.STRING {
+		t.Fatalf("expected STRING, got %s", body.Type())
+	}
+	if len(body.AsString()) != 2048 {
+		t.Fatalf("expected 2048 bytes, got %d", len(body.AsString()))
+	}
+}
+
 func TestDecodeJSONRejectsUnknownNodeService(t *testing.T) {
 	input := `{
   "name": "unknown-service",

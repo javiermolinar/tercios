@@ -1,11 +1,17 @@
 package typedvalue
 
 import (
+	_ "embed"
 	"fmt"
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
 )
+
+//go:embed seed.txt
+var blobSeed string
+
+const defaultBlobSize = 100
 
 type ValueType string
 
@@ -24,6 +30,7 @@ const (
 type TypedValue struct {
 	Type  ValueType `json:"type"`
 	Value any       `json:"value"`
+	Size  *int      `json:"size,omitempty"`
 }
 
 func (v TypedValue) Validate(field string) error {
@@ -31,40 +38,71 @@ func (v TypedValue) Validate(field string) error {
 	if typeName == "" {
 		return fmt.Errorf("%s: value type is required", field)
 	}
-	if v.Value == nil {
-		return fmt.Errorf("%s: value is required", field)
-	}
-
 	switch ValueType(typeName) {
 	case ValueTypeString:
+		if v.Size != nil {
+			if *v.Size <= 0 {
+				return fmt.Errorf("%s: size must be > 0", field)
+			}
+			if v.Value != nil {
+				if _, ok := v.Value.(string); !ok {
+					return fmt.Errorf("%s: expected string value", field)
+				}
+			}
+			return nil
+		}
+		if v.Value == nil {
+			return fmt.Errorf("%s: value is required", field)
+		}
 		if _, ok := v.Value.(string); !ok {
 			return fmt.Errorf("%s: expected string value", field)
 		}
 	case ValueTypeBool:
+		if v.Value == nil {
+			return fmt.Errorf("%s: value is required", field)
+		}
 		if _, ok := v.Value.(bool); !ok {
 			return fmt.Errorf("%s: expected bool value", field)
 		}
 	case ValueTypeInt:
+		if v.Value == nil {
+			return fmt.Errorf("%s: value is required", field)
+		}
 		if _, ok := ToInt64(v.Value); !ok {
 			return fmt.Errorf("%s: expected int value", field)
 		}
 	case ValueTypeFloat:
+		if v.Value == nil {
+			return fmt.Errorf("%s: value is required", field)
+		}
 		if _, ok := ToFloat64(v.Value); !ok {
 			return fmt.Errorf("%s: expected float value", field)
 		}
 	case ValueTypeStringArray:
+		if v.Value == nil {
+			return fmt.Errorf("%s: value is required", field)
+		}
 		if _, err := toStringSlice(v.Value); err != nil {
 			return fmt.Errorf("%s: %w", field, err)
 		}
 	case ValueTypeIntArray:
+		if v.Value == nil {
+			return fmt.Errorf("%s: value is required", field)
+		}
 		if _, err := toInt64Slice(v.Value); err != nil {
 			return fmt.Errorf("%s: %w", field, err)
 		}
 	case ValueTypeFloatArray:
+		if v.Value == nil {
+			return fmt.Errorf("%s: value is required", field)
+		}
 		if _, err := toFloat64Slice(v.Value); err != nil {
 			return fmt.Errorf("%s: %w", field, err)
 		}
 	case ValueTypeBoolArray:
+		if v.Value == nil {
+			return fmt.Errorf("%s: value is required", field)
+		}
 		if _, err := toBoolSlice(v.Value); err != nil {
 			return fmt.Errorf("%s: %w", field, err)
 		}
@@ -77,6 +115,13 @@ func (v TypedValue) Validate(field string) error {
 func (v TypedValue) Normalized() (any, bool) {
 	switch ValueType(strings.ToLower(strings.TrimSpace(string(v.Type)))) {
 	case ValueTypeString:
+		if v.Size != nil {
+			seed := blobSeed
+			if s, ok := v.Value.(string); ok && s != "" {
+				seed = s
+			}
+			return generateBlob(seed, *v.Size), true
+		}
 		s, ok := v.Value.(string)
 		return s, ok
 	case ValueTypeBool:
@@ -109,6 +154,13 @@ func (v TypedValue) ToAttributeValue() (attribute.Value, error) {
 	normalizedType := ValueType(strings.ToLower(strings.TrimSpace(string(v.Type))))
 	switch normalizedType {
 	case ValueTypeString:
+		if v.Size != nil {
+			seed := blobSeed
+			if s, ok := v.Value.(string); ok && s != "" {
+				seed = s
+			}
+			return attribute.StringValue(generateBlob(seed, *v.Size)), nil
+		}
 		s, ok := v.Value.(string)
 		if !ok {
 			return attribute.Value{}, fmt.Errorf("expected string value")
@@ -223,6 +275,23 @@ func toBoolSlice(value any) ([]bool, error) {
 		out[i] = b
 	}
 	return out, nil
+}
+
+func generateBlob(seed string, size int) string {
+	if size <= 0 {
+		size = defaultBlobSize
+	}
+	if len(seed) == 0 {
+		seed = blobSeed
+	}
+	if size <= len(seed) {
+		return seed[:size]
+	}
+	buf := make([]byte, size)
+	for i := 0; i < size; {
+		i += copy(buf[i:], seed)
+	}
+	return string(buf)
 }
 
 func ToInt64(value any) (int64, bool) {

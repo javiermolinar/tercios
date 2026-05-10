@@ -172,6 +172,87 @@ func TestArrayValidateRejectsWrongElementType(t *testing.T) {
 	}
 }
 
+func TestStringSizeGeneratesBlob(t *testing.T) {
+	size := 4096
+	tv := TypedValue{Type: ValueTypeString, Size: &size}
+	if err := tv.Validate("test"); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	av, err := tv.ToAttributeValue()
+	if err != nil {
+		t.Fatalf("ToAttributeValue() error = %v", err)
+	}
+	if av.Type() != attribute.STRING {
+		t.Fatalf("expected STRING, got %s", av.Type())
+	}
+	if len(av.AsString()) != 4096 {
+		t.Fatalf("expected 4096 bytes, got %d", len(av.AsString()))
+	}
+}
+
+func TestStringSizeWithCustomSeed(t *testing.T) {
+	size := 20
+	tv := TypedValue{Type: ValueTypeString, Value: "ABCD", Size: &size}
+	if err := tv.Validate("test"); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	av, err := tv.ToAttributeValue()
+	if err != nil {
+		t.Fatalf("ToAttributeValue() error = %v", err)
+	}
+	got := av.AsString()
+	if got != "ABCDABCDABCDABCDABCD" {
+		t.Fatalf("expected tiled ABCD, got %q", got)
+	}
+}
+
+func TestStringSizeSmallerThanSeed(t *testing.T) {
+	size := 5
+	tv := TypedValue{Type: ValueTypeString, Value: "ABCDEFGHIJ", Size: &size}
+	if err := tv.Validate("test"); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	av, err := tv.ToAttributeValue()
+	if err != nil {
+		t.Fatalf("ToAttributeValue() error = %v", err)
+	}
+	if got := av.AsString(); got != "ABCDE" {
+		t.Fatalf("expected truncated seed, got %q", got)
+	}
+}
+
+func TestStringSizeRejectsZero(t *testing.T) {
+	size := 0
+	tv := TypedValue{Type: ValueTypeString, Size: &size}
+	if err := tv.Validate("test"); err == nil {
+		t.Fatalf("expected error for size=0")
+	}
+}
+
+func TestStringSizeRejectsNegative(t *testing.T) {
+	size := -1
+	tv := TypedValue{Type: ValueTypeString, Size: &size}
+	if err := tv.Validate("test"); err == nil {
+		t.Fatalf("expected error for negative size")
+	}
+}
+
+func TestStringSizeNormalized(t *testing.T) {
+	size := 50
+	tv := TypedValue{Type: ValueTypeString, Size: &size}
+	val, ok := tv.Normalized()
+	if !ok {
+		t.Fatalf("Normalized() returned false")
+	}
+	s, ok := val.(string)
+	if !ok {
+		t.Fatalf("expected string, got %T", val)
+	}
+	if len(s) != 50 {
+		t.Fatalf("expected 50 bytes, got %d", len(s))
+	}
+}
+
 func TestArrayNormalized(t *testing.T) {
 	tv := TypedValue{Type: ValueTypeStringArray, Value: []any{"a", "b"}}
 	val, ok := tv.Normalized()
