@@ -26,6 +26,11 @@ const (
 	ValueTypeInt    ValueType = typedvalue.ValueTypeInt
 	ValueTypeFloat  ValueType = typedvalue.ValueTypeFloat
 	ValueTypeBool   ValueType = typedvalue.ValueTypeBool
+
+	ValueTypeStringArray ValueType = typedvalue.ValueTypeStringArray
+	ValueTypeIntArray    ValueType = typedvalue.ValueTypeIntArray
+	ValueTypeFloatArray  ValueType = typedvalue.ValueTypeFloatArray
+	ValueTypeBoolArray   ValueType = typedvalue.ValueTypeBoolArray
 )
 
 type TypedValue = typedvalue.TypedValue

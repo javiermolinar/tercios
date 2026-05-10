@@ -105,6 +105,80 @@ func TestDecodeJSONRejectsCycle(t *testing.T) {
 	}
 }
 
+func TestDecodeJSONWithArrayAttributes(t *testing.T) {
+	input := `{
+  "name": "array-test",
+  "seed": 1,
+  "services": {
+    "svc": { "resource": { "service.name": { "type": "string", "value": "svc" } } }
+  },
+  "nodes": {
+    "a": { "service": "svc", "span_name": "A" },
+    "b": { "service": "svc", "span_name": "B" }
+  },
+  "root": "a",
+  "edges": [
+    {
+      "from": "a",
+      "to": "b",
+      "kind": "internal",
+      "repeat": 1,
+      "duration_ms": 10,
+      "span_attributes": {
+        "http.methods": { "type": "string_array", "value": ["GET", "POST"] },
+        "retry.codes":  { "type": "int_array",    "value": [200, 503] },
+        "scores":       { "type": "float_array",  "value": [1.1, 2.2] },
+        "flags":        { "type": "bool_array",   "value": [true, false] }
+      }
+    }
+  ]
+}`
+
+	cfg, err := DecodeJSON(strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("DecodeJSON() error = %v", err)
+	}
+
+	definition, err := cfg.Build()
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	attrs := definition.Edges[0].SpanAttributes
+
+	methods := attrs["http.methods"]
+	if methods.Type() != attribute.STRINGSLICE {
+		t.Fatalf("expected STRINGSLICE, got %s", methods.Type())
+	}
+	if got := methods.AsStringSlice(); len(got) != 2 || got[0] != "GET" || got[1] != "POST" {
+		t.Fatalf("unexpected string_array value: %v", got)
+	}
+
+	codes := attrs["retry.codes"]
+	if codes.Type() != attribute.INT64SLICE {
+		t.Fatalf("expected INT64SLICE, got %s", codes.Type())
+	}
+	if got := codes.AsInt64Slice(); len(got) != 2 || got[0] != 200 || got[1] != 503 {
+		t.Fatalf("unexpected int_array value: %v", got)
+	}
+
+	scores := attrs["scores"]
+	if scores.Type() != attribute.FLOAT64SLICE {
+		t.Fatalf("expected FLOAT64SLICE, got %s", scores.Type())
+	}
+	if got := scores.AsFloat64Slice(); len(got) != 2 || got[0] != 1.1 || got[1] != 2.2 {
+		t.Fatalf("unexpected float_array value: %v", got)
+	}
+
+	flags := attrs["flags"]
+	if flags.Type() != attribute.BOOLSLICE {
+		t.Fatalf("expected BOOLSLICE, got %s", flags.Type())
+	}
+	if got := flags.AsBoolSlice(); len(got) != 2 || got[0] != true || got[1] != false {
+		t.Fatalf("unexpected bool_array value: %v", got)
+	}
+}
+
 func TestDecodeJSONRejectsUnknownNodeService(t *testing.T) {
 	input := `{
   "name": "unknown-service",
