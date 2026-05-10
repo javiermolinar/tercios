@@ -48,7 +48,7 @@ func main() {
 	defaults := config.DefaultConfig()
 	flag.StringVar(&endpoint, "endpoint", defaults.Endpoint.Address, "OTLP endpoint (for HTTP, prefer http(s)://host:port/v1/traces)")
 	flag.StringVar(&protocol, "protocol", string(defaults.Endpoint.Protocol), "OTLP protocol: grpc or http")
-	flag.BoolVar(&insecure, "insecure", defaults.Endpoint.Insecure, "disable TLS for OTLP exporters")
+	flag.BoolVar(&insecure, "insecure", defaults.Endpoint.Insecure, "send OTLP over plaintext instead of TLS (https/grpcs endpoints default to false)")
 	flag.StringVar(&tlsCACert, "tls-ca-cert", "", "path to PEM CA certificate file for server verification")
 	flag.BoolVar(&tlsSkipVerify, "tls-skip-verify", false, "skip TLS certificate verification")
 	flag.IntVar(&exporters, "exporters", defaults.Concurrency.Exporters, "number of concurrent exporters (connections)")
@@ -83,8 +83,17 @@ func main() {
 		_, ok := setFlags[name]
 		return ok
 	}
+	insecureExplicit := isFlagSet("insecure")
 	if err := applyOTLPEnvOverrides(&endpoint, &protocol, &insecure, isFlagSet); err != nil {
 		log.Fatalf("invalid OTLP environment override: %v", err)
+	}
+	if !insecureExplicit {
+		if _, ok := firstNonEmptyEnv(envOTLPTracesInsecure, envOTLPInsecure); ok {
+			insecureExplicit = true
+		}
+	}
+	if err := applyEndpointSchemeSecurityDefaults(endpoint, &insecure, insecureExplicit); err != nil {
+		log.Fatalf("invalid endpoint security: %v", err)
 	}
 
 	requestInterval := time.Duration(requestIntervalSeconds * float64(time.Second))
@@ -130,10 +139,10 @@ func main() {
 	if !dryRun && outputFormat != otlp.DryRunOutputSummary {
 		log.Fatalf("-o/--output=%s requires --dry-run", outputFormat)
 	}
-	if insecure && (isFlagSet("tls-ca-cert") || isFlagSet("tls-skip-verify")) {
-		log.Printf("warning: --tls-ca-cert and --tls-skip-verify are ignored when --insecure is set")
-		tlsCACert = ""
-		tlsSkipVerify = false
+	if !dryRun {
+		if err := validateTLSConfiguration(insecure, tlsCACert, tlsSkipVerify); err != nil {
+			log.Fatalf("invalid TLS configuration: %v", err)
+		}
 	}
 
 	var factory pipeline.ExporterFactory
@@ -154,11 +163,11 @@ func main() {
 			TLSSkipVerify:     tlsSkipVerify,
 		}
 		factory = otlpFactory
-		fmt.Fprintln(os.Stderr, "Running exporter preflight check...")
+		_, _ = fmt.Fprintln(os.Stderr, "Running exporter preflight check...")
 		if err := otlp.RunPreflight(ctx, otlpFactory, cfg.Requests.ExportTimeout.Duration); err != nil {
 			log.Fatalf("preflight failed: %v", err)
 		}
-		fmt.Fprintln(os.Stderr, "Preflight check passed")
+		_, _ = fmt.Fprintln(os.Stderr, "Preflight check passed")
 	}
 
 	runner := pipeline.NewConcurrencyRunner(cfg.Concurrency.Exporters, cfg.Requests.PerExporter)
@@ -206,9 +215,9 @@ func main() {
 	err = pipe.RunWithProgress(ctx, runner, factory, cfg.Requests.Interval.Duration, cfg.Requests.For.Duration, cfg.Requests.RampUp.Duration, cfg.Requests.ExportTimeout.Duration, traceIDSampleLimit, progressInterval, os.Stderr)
 	summary := metrics.FormatSummary(pipe.Summary())
 	if dryRun && outputFormat == otlp.DryRunOutputJSON {
-		fmt.Fprintln(os.Stderr, summary)
+		_, _ = fmt.Fprintln(os.Stderr, summary)
 	} else {
-		fmt.Println(summary)
+		_, _ = fmt.Println(summary)
 	}
 	if err != nil {
 		log.Printf("pipeline failed: %v", err)
@@ -218,7 +227,7 @@ func main() {
 
 func usage() {
 	w := os.Stderr
-	fmt.Fprintf(w, `tercios — OTLP trace generator for load testing collectors and tracing pipelines.
+	_, _ = fmt.Fprintf(w, `tercios — OTLP trace generator for load testing collectors and tracing pipelines.
 
 Usage:
   tercios [flags]
@@ -239,13 +248,13 @@ Examples:
 Connection:
 `)
 	printFlag(w, "endpoint", "protocol", "insecure", "header", "tls-ca-cert", "tls-skip-verify")
-	fmt.Fprintf(w, "\nLoad:\n")
+	_, _ = fmt.Fprintf(w, "\nLoad:\n")
 	printFlag(w, "exporters", "max-requests", "request-interval", "for", "ramp-up", "export-timeout", "slow-response-delay")
-	fmt.Fprintf(w, "\nScenarios:\n")
+	_, _ = fmt.Fprintf(w, "\nScenarios:\n")
 	printFlag(w, "scenario-file", "scenario-strategy", "scenario-run-seed")
-	fmt.Fprintf(w, "\nChaos:\n")
+	_, _ = fmt.Fprintf(w, "\nChaos:\n")
 	printFlag(w, "chaos-policies-file", "chaos-seed")
-	fmt.Fprintf(w, "\nOutput:\n")
+	_, _ = fmt.Fprintf(w, "\nOutput:\n")
 	printFlag(w, "dry-run", "output", "summary-trace-ids", "summary-trace-ids-limit")
 }
 
@@ -259,6 +268,6 @@ func printFlag(w *os.File, names ...string) {
 		if f.DefValue != "" && f.DefValue != "0" && f.DefValue != "false" {
 			def = fmt.Sprintf(" (default %s)", f.DefValue)
 		}
-		fmt.Fprintf(w, "  --%s\n        %s%s\n", f.Name, f.Usage, def)
+		_, _ = fmt.Fprintf(w, "  --%s\n        %s%s\n", f.Name, f.Usage, def)
 	}
 }

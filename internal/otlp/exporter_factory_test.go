@@ -40,7 +40,7 @@ func TestMergedTLSConfig_PreservesEnvClientCertificateWhenFlagCACertSet(t *testi
 	if cfg == nil {
 		t.Fatalf("mergedTLSConfig() returned nil config")
 	}
-	if cfg.RootCAs == nil || len(cfg.RootCAs.Subjects()) == 0 {
+	if cfg.RootCAs == nil || cfg.RootCAs.Equal(x509.NewCertPool()) {
 		t.Fatalf("expected RootCAs from --tls-ca-cert to be preserved")
 	}
 	if len(cfg.Certificates) != 1 {

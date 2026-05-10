@@ -141,13 +141,17 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, runner *ConcurrencyRunne
 	for i := 0; i < workerCount; i++ {
 		workerID := i
 		exporterWG.Add(1)
-		group.Go(func() error {
+		group.Go(func() (err error) {
 			defer exporterWG.Done()
 			exporter, err := factory.NewBatchExporter(groupCtx)
 			if err != nil {
 				return fmt.Errorf("export worker=%d init: %w", workerID, err)
 			}
-			defer exporter.Shutdown(groupCtx)
+			defer func() {
+				if shutdownErr := exporter.Shutdown(groupCtx); shutdownErr != nil && err == nil {
+					err = fmt.Errorf("export worker=%d shutdown: %w", workerID, shutdownErr)
+				}
+			}()
 
 			for {
 				select {
@@ -213,7 +217,7 @@ func (p *Pipeline) RunWithProgress(ctx context.Context, runner *ConcurrencyRunne
 				}
 				stats.RecordBatchWithTraceIDs(result.duration, result.err, result.traceIDs, result.spans)
 			case <-tickCh:
-				fmt.Fprintln(progressWriter, metrics.FormatProgress(stats.SummaryWithElapsed(time.Since(startTime)), expectedTotal))
+				_, _ = fmt.Fprintln(progressWriter, metrics.FormatProgress(stats.SummaryWithElapsed(time.Since(startTime)), expectedTotal))
 			}
 		}
 	})

@@ -79,7 +79,7 @@ func LoadFromJSON(path string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	return DecodeJSON(file)
 }
 

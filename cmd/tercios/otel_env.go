@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -45,6 +46,60 @@ func applyOTLPEnvOverrides(endpoint *string, protocol *string, insecure *bool, i
 		}
 	}
 
+	return nil
+}
+
+func applyEndpointSchemeSecurityDefaults(endpoint string, insecure *bool, insecureExplicit bool) error {
+	usesTLS, scheme, ok, err := endpointSchemeUsesTLS(endpoint)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	if insecure == nil {
+		return fmt.Errorf("insecure setting is not configured")
+	}
+	if insecureExplicit {
+		if usesTLS && *insecure {
+			return fmt.Errorf("endpoint scheme %q implies TLS but insecure mode was explicitly enabled", scheme)
+		}
+		return nil
+	}
+
+	*insecure = !usesTLS
+	return nil
+}
+
+func endpointSchemeUsesTLS(raw string) (usesTLS bool, scheme string, ok bool, err error) {
+	if !strings.Contains(raw, "://") {
+		return false, "", false, nil
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false, "", false, err
+	}
+	scheme = strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	switch scheme {
+	case "https", "grpcs":
+		return true, scheme, true, nil
+	case "http", "grpc":
+		return false, scheme, true, nil
+	default:
+		return false, scheme, false, nil
+	}
+}
+
+func validateTLSConfiguration(insecure bool, tlsCACert string, tlsSkipVerify bool) error {
+	if !insecure {
+		return nil
+	}
+	if strings.TrimSpace(tlsCACert) != "" {
+		return fmt.Errorf("--tls-ca-cert requires TLS; use --insecure=false or an https/grpcs endpoint")
+	}
+	if tlsSkipVerify {
+		return fmt.Errorf("--tls-skip-verify requires TLS; use --insecure=false or an https/grpcs endpoint")
+	}
 	return nil
 }
 

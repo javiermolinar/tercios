@@ -2,6 +2,11 @@
 
 Tercios exposes TLS settings as first-class CLI flags and JSON config fields. Use these when your collector uses HTTPS/TLS with an internal CA or self-signed chain.
 
+Security is explicit:
+- `http://` and `grpc://` endpoints default to plaintext/insecure transport.
+- `https://` and `grpcs://` endpoints default to TLS.
+- Host-only endpoints such as `collector.internal:4317` keep the default `--insecure=true`; pass `--insecure=false` to enable TLS.
+
 ## CLI flags
 
 | Flag | Description |
@@ -9,7 +14,7 @@ Tercios exposes TLS settings as first-class CLI flags and JSON config fields. Us
 | `--tls-ca-cert <path>` | PEM CA certificate bundle used to verify the collector certificate |
 | `--tls-skip-verify` | Skip TLS certificate verification (**testing only**) |
 
-Both flags are ignored when `--insecure` is set. They work with both OTLP/gRPC and OTLP/HTTP, and with `--slow-response-delay` on the HTTP exporter path.
+For non-dry-run exports, TLS flags require TLS to be enabled. If `--insecure=true`, Tercios exits with an error instead of silently ignoring `--tls-ca-cert` or `--tls-skip-verify`. They work with both OTLP/gRPC and OTLP/HTTP, and with `--slow-response-delay` on the HTTP exporter path.
 
 ## Examples
 
@@ -30,6 +35,7 @@ gRPC with certificate verification disabled (testing only):
 go run ./cmd/tercios \
   --protocol=grpc \
   --endpoint=collector.internal:4317 \
+  --insecure=false \
   --tls-skip-verify \
   --exporters=5 \
   --max-requests=100
@@ -57,4 +63,4 @@ Standard OTEL TLS env vars are supported for advanced setups such as mTLS:
 - `OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE` — client certificate (mTLS)
 - `OTEL_EXPORTER_OTLP_CLIENT_KEY` — client key (mTLS)
 
-Signal-specific variants (`OTEL_EXPORTER_OTLP_TRACES_*`) take precedence over the generic `OTEL_EXPORTER_OTLP_*` equivalents. CLI flags take precedence over all environment variables.
+Signal-specific variants (`OTEL_EXPORTER_OTLP_TRACES_*`) take precedence over the generic `OTEL_EXPORTER_OTLP_*` equivalents. CLI flags take precedence over all environment variables. If no `*_INSECURE` override is set, endpoint schemes still apply (`https://` and `grpcs://` enable TLS by default).

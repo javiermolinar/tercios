@@ -1,4 +1,4 @@
-GOLANGCI_LINT_VERSION ?= v1.55.2
+GOLANGCI_LINT_PACKAGE ?= github.com/golangci/golangci-lint/v2/cmd/golangci-lint
 BINARY_NAME ?= tercios
 BIN_DIR ?= bin
 IMAGE_NAME ?= tercios
@@ -16,7 +16,7 @@ test:
 	go test ./...
 
 lint:
-	go run -modfile=tools/go.mod github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
+	go run -modfile=tools/go.mod $(GOLANGCI_LINT_PACKAGE) run ./...
 
 tidy:
 	go mod tidy

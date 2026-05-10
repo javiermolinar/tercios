@@ -90,6 +90,51 @@ func TestApplyOTLPEnvOverrides_InvalidProtocol(t *testing.T) {
 	}
 }
 
+func TestApplyEndpointSchemeSecurityDefaults_HTTPSDefaultsToTLS(t *testing.T) {
+	insecure := true
+
+	err := applyEndpointSchemeSecurityDefaults("https://collector.example:4318/v1/traces", &insecure, false)
+	if err != nil {
+		t.Fatalf("apply endpoint security failed: %v", err)
+	}
+	if insecure {
+		t.Fatalf("expected https endpoint to default to TLS")
+	}
+}
+
+func TestApplyEndpointSchemeSecurityDefaults_ExplicitInsecureConflictsWithHTTPS(t *testing.T) {
+	insecure := true
+
+	err := applyEndpointSchemeSecurityDefaults("https://collector.example:4318/v1/traces", &insecure, true)
+	if err == nil {
+		t.Fatalf("expected conflict for explicit insecure=true with https endpoint")
+	}
+}
+
+func TestApplyEndpointSchemeSecurityDefaults_ExplicitInsecureFalseWinsForHostPort(t *testing.T) {
+	insecure := false
+
+	err := applyEndpointSchemeSecurityDefaults("collector.example:4317", &insecure, true)
+	if err != nil {
+		t.Fatalf("apply endpoint security failed: %v", err)
+	}
+	if insecure {
+		t.Fatalf("expected explicit insecure=false to be preserved")
+	}
+}
+
+func TestValidateTLSConfigurationRejectsTLSFlagsWhenInsecure(t *testing.T) {
+	if err := validateTLSConfiguration(true, "ca.pem", false); err == nil {
+		t.Fatalf("expected --tls-ca-cert to require TLS")
+	}
+	if err := validateTLSConfiguration(true, "", true); err == nil {
+		t.Fatalf("expected --tls-skip-verify to require TLS")
+	}
+	if err := validateTLSConfiguration(false, "ca.pem", true); err != nil {
+		t.Fatalf("expected TLS options to be valid when TLS is enabled: %v", err)
+	}
+}
+
 func flagSetFn(names ...string) func(string) bool {
 	set := map[string]struct{}{}
 	for _, name := range names {

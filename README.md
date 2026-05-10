@@ -115,7 +115,7 @@ Notes:
 
 ## TLS / secure OTLP endpoints
 
-Tercios supports TLS with CA certs, skip-verify, and standard OTEL mTLS env vars. See [docs/tls.md](docs/tls.md) for flags, JSON config, and examples.
+Tercios supports TLS with CA certs, skip-verify, and standard OTEL mTLS env vars. `https://` and `grpcs://` endpoints enable TLS by default; host-only endpoints need `--insecure=false`. See [docs/tls.md](docs/tls.md) for flags, JSON config, and examples.
 
 ---
 
@@ -209,9 +209,9 @@ go run ./cmd/tercios \
 
 - `--endpoint` OTLP endpoint (gRPC: `host:port`, HTTP: `http(s)://host:port/v1/traces`)
 - `--protocol` `grpc` or `http`
-- `--insecure` disable TLS
-- `--tls-ca-cert` PEM CA certificate bundle used to verify the collector certificate
-- `--tls-skip-verify` skip TLS certificate verification (testing only)
+- `--insecure` use plaintext/insecure transport instead of TLS (`https://` and `grpcs://` endpoints default to TLS)
+- `--tls-ca-cert` PEM CA certificate bundle used to verify the collector certificate (requires TLS)
+- `--tls-skip-verify` skip TLS certificate verification (testing only; requires TLS)
 - `--header` repeatable headers (`Key=Value` or `Key: Value`)
 - `--exporters` concurrent exporters
 - `--max-requests` requests per exporter (`0` for no request limit)
