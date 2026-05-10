@@ -115,7 +115,21 @@ type jsonSpan struct {
 	DurationMs   int64          `json:"duration_ms"`
 	Attributes   map[string]any `json:"attributes,omitempty"`
 	Resource     map[string]any `json:"resource,omitempty"`
+	Events       []jsonEvent    `json:"events,omitempty"`
+	Links        []jsonLink     `json:"links,omitempty"`
 	Status       jsonStatus     `json:"status"`
+}
+
+type jsonEvent struct {
+	Name       string         `json:"name"`
+	Time       string         `json:"time,omitempty"`
+	Attributes map[string]any `json:"attributes,omitempty"`
+}
+
+type jsonLink struct {
+	TraceID    string         `json:"trace_id"`
+	SpanID     string         `json:"span_id"`
+	Attributes map[string]any `json:"attributes,omitempty"`
 }
 
 type jsonStatus struct {
@@ -140,11 +154,58 @@ func toJSONSpanFromModel(span model.Span) jsonSpan {
 		DurationMs:   span.EndTime.Sub(span.StartTime).Milliseconds(),
 		Attributes:   attributeMapToAnyMap(span.Attributes),
 		Resource:     attributeMapToAnyMap(span.ResourceAttributes),
+		Events:       eventsToJSON(span.Events),
+		Links:        linksToJSON(span.Links),
 		Status: jsonStatus{
 			Code:    span.StatusCode.String(),
 			Message: span.StatusDescription,
 		},
 	}
+}
+
+func eventsToJSON(events []model.Event) []jsonEvent {
+	if len(events) == 0 {
+		return nil
+	}
+	out := make([]jsonEvent, len(events))
+	for i, e := range events {
+		var t string
+		if !e.Time.IsZero() {
+			t = e.Time.UTC().Format("2006-01-02T15:04:05.000000000Z07:00")
+		}
+		out[i] = jsonEvent{
+			Name:       e.Name,
+			Time:       t,
+			Attributes: keyValuesToAnyMap(e.Attributes),
+		}
+	}
+	return out
+}
+
+func linksToJSON(links []model.Link) []jsonLink {
+	if len(links) == 0 {
+		return nil
+	}
+	out := make([]jsonLink, len(links))
+	for i, l := range links {
+		out[i] = jsonLink{
+			TraceID:    l.SpanContext.TraceID().String(),
+			SpanID:     l.SpanContext.SpanID().String(),
+			Attributes: keyValuesToAnyMap(l.Attributes),
+		}
+	}
+	return out
+}
+
+func keyValuesToAnyMap(kvs []attribute.KeyValue) map[string]any {
+	if len(kvs) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(kvs))
+	for _, kv := range kvs {
+		out[string(kv.Key)] = kv.Value.AsInterface()
+	}
+	return out
 }
 
 func attributeMapToAnyMap(attributes map[string]attribute.Value) map[string]any {

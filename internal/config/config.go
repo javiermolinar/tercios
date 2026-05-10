@@ -3,8 +3,6 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"io"
-	"os"
 	"time"
 )
 
@@ -97,28 +95,6 @@ func DefaultConfig() Config {
 			ExportTimeout: Duration{Duration: 10 * time.Second},
 		},
 	}
-}
-
-func LoadFromJSON(path string) (Config, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return Config{}, err
-	}
-	defer file.Close()
-	return DecodeJSON(file)
-}
-
-func DecodeJSON(r io.Reader) (Config, error) {
-	cfg := DefaultConfig()
-	decoder := json.NewDecoder(r)
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&cfg); err != nil {
-		return Config{}, err
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return Config{}, fmt.Errorf("invalid JSON: %w", err)
-	}
-	return cfg, nil
 }
 
 func (c Config) Validate() error {
