@@ -201,6 +201,7 @@ func (g *Generator) newSpan(
 		duration = 1 * time.Millisecond
 	}
 
+	end := start.Add(duration)
 	span := model.Span{
 		TraceID:            traceID,
 		SpanID:             spanID,
@@ -208,14 +209,28 @@ func (g *Generator) newSpan(
 		Name:               name,
 		Kind:               kind,
 		StartTime:          start,
-		EndTime:            start.Add(duration),
+		EndTime:            end,
 		Attributes:         attrs,
 		ResourceAttributes: resourceAttrs,
 		StatusCode:         codes.Ok,
-		Events:             events,
+		Events:             eventsWithDefaultTime(events, start.Add(duration/2)),
 		Links:              links,
 	}
 	return span
+}
+
+func eventsWithDefaultTime(events []model.Event, defaultTime time.Time) []model.Event {
+	if len(events) == 0 {
+		return nil
+	}
+	out := make([]model.Event, len(events))
+	copy(out, events)
+	for i := range out {
+		if out[i].Time.IsZero() {
+			out[i].Time = defaultTime
+		}
+	}
+	return out
 }
 
 func resolveEvents(defs []EventDef) []model.Event {

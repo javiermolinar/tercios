@@ -144,6 +144,9 @@ func TestGeneratorEmitsEventsAndLinks(t *testing.T) {
 				if len(event.Attributes) == 0 {
 					t.Fatalf("expected event attributes")
 				}
+				if event.Time.Before(span.StartTime) || event.Time.After(span.EndTime) {
+					t.Fatalf("expected event time inside span duration, got event=%s start=%s end=%s", event.Time, span.StartTime, span.EndTime)
+				}
 			}
 		}
 		for _, link := range span.Links {
