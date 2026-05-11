@@ -14,15 +14,14 @@ Install with Go:
 go install github.com/javiermolinar/tercios/cmd/tercios@latest
 ```
 
-Or download a prebuilt binary from [GitHub Releases](https://github.com/javiermolinar/tercios/releases/latest):
+Or download prebuilt binaries and checksums from [GitHub Releases](https://github.com/javiermolinar/tercios/releases/latest).
 
-- `tercios_linux_amd64.tar.gz`
-- `tercios_linux_arm64.tar.gz`
-- `tercios_darwin_amd64.tar.gz`
-- `tercios_darwin_arm64.tar.gz`
-- `tercios_windows_amd64.zip`
+## Docker image
 
-Each release also includes a `checksums.txt` file.
+Published multi-architecture images are available on Docker Hub. Use version tags for CI and other programmatic use; `latest` tracks the newest published image.
+
+- `javimolinar/tercios:v0.4.0`
+- `javimolinar/tercios:latest`
 
 
 ## How Tercios works
@@ -56,7 +55,7 @@ In short: **scenario source → optional chaos → export at scale**.
 If you just want to verify Tercios works, run it in dry-run mode (no collector needed):
 
 ```bash
-go run ./cmd/tercios --dry-run
+tercios --dry-run
 ```
 
 What this does (with defaults):
@@ -67,7 +66,7 @@ What this does (with defaults):
 If you want to see the generated spans as JSON:
 
 ```bash
-go run ./cmd/tercios --dry-run -o json 2>/dev/null
+tercios --dry-run -o json 2>/dev/null
 ```
 
 If you want to send traces to a local OpenTelemetry Collector with environment variables instead of flags:
@@ -77,9 +76,7 @@ export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=localhost:4317
 export OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=grpc
 export OTEL_EXPORTER_OTLP_TRACES_INSECURE=true
 
-go run ./cmd/tercios \
-  --exporters=1 \
-  --max-requests=1
+tercios --exporters=1 --max-requests=1
 ```
 
 Notes:
@@ -105,8 +102,7 @@ In this context, **stress testing** means sending high-volume traces to an OTEL 
 Example (HTTP collector):
 
 ```bash
-go run ./cmd/tercios \
-  --protocol=http \
+tercios --protocol=http \
   --endpoint=http://localhost:4318/v1/traces \
   --exporters=50 \
   --max-requests=1000 \
@@ -128,8 +124,7 @@ Before any non-dry-run load generation, Tercios runs an automatic exporter prefl
 Duration-based run example:
 
 ```bash
-go run ./cmd/tercios \
-  --endpoint=localhost:4317 \
+tercios --endpoint=localhost:4317 \
   --exporters=20 \
   --max-requests=0 \
   --for=60 \
@@ -140,8 +135,7 @@ go run ./cmd/tercios \
 Long-running mode (send forever, stop with Ctrl+C):
 
 ```bash
-go run ./cmd/tercios \
-  --endpoint=localhost:4317 \
+tercios --endpoint=localhost:4317 \
   --exporters=20 \
   --max-requests=0 \
   --request-interval=0
@@ -154,8 +148,7 @@ go run ./cmd/tercios \
 Mutate generated traces with policies — inject errors, shift attributes, add latency. See [docs/chaos.md](docs/chaos.md) for the full policy format and actions reference.
 
 ```bash
-go run ./cmd/tercios \
-  --dry-run -o json \
+tercios --dry-run -o json \
   --chaos-policies-file=my-chaos.json \
   --chaos-seed=42 \
   --exporters=1 \
@@ -170,8 +163,7 @@ go run ./cmd/tercios \
 Generate deterministic traces from custom topology definitions. Without `--scenario-file`, the embedded default scenario is used. See [docs/scenarios.md](docs/scenarios.md) for the full config format, edge kinds, and multi-scenario selection.
 
 ```bash
-go run ./cmd/tercios \
-  --scenario-file=my-scenario.json \
+tercios --scenario-file=my-scenario.json \
   --dry-run -o json \
   --exporters=1 \
   --max-requests=1 \
