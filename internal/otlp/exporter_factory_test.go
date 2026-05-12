@@ -136,6 +136,35 @@ func TestNewBatchExporter_HonorsTLSConfigForGRPC(t *testing.T) {
 	}
 }
 
+func TestNewOTLPClient_AcceptsExportTimeout(t *testing.T) {
+	cases := []struct {
+		name     string
+		protocol config.Protocol
+		endpoint string
+	}{
+		{name: "grpc", protocol: config.ProtocolGRPC, endpoint: "localhost:4317"},
+		{name: "http", protocol: config.ProtocolHTTP, endpoint: "http://localhost:4318/v1/traces"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			factory := ExporterFactory{
+				Protocol:      tc.protocol,
+				Endpoint:      tc.endpoint,
+				Insecure:      true,
+				ExportTimeout: 30 * time.Second,
+			}
+			client, err := factory.newOTLPClient()
+			if err != nil {
+				t.Fatalf("newOTLPClient() error = %v", err)
+			}
+			if client == nil {
+				t.Fatalf("newOTLPClient() returned nil client")
+			}
+		})
+	}
+}
+
 func testEnvLookup(values map[string]string) func(string) (string, bool) {
 	return func(key string) (string, bool) {
 		value, ok := values[key]

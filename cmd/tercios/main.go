@@ -56,7 +56,7 @@ func main() {
 	flag.Float64Var(&requestIntervalSeconds, "request-interval", defaults.Requests.Interval.Seconds(), "seconds between requests per exporter (0 for no delay)")
 	flag.Float64Var(&requestForSeconds, "for", defaults.Requests.For.Seconds(), "seconds to send traces per exporter (0 for no duration limit)")
 	flag.Float64Var(&rampUpSeconds, "ramp-up", defaults.Requests.RampUp.Seconds(), "seconds to linearly ramp exporter workers from 0 to max concurrency")
-	flag.Float64Var(&exportTimeoutSeconds, "export-timeout", defaults.Requests.ExportTimeout.Seconds(), "seconds before each export attempt times out (0 disables per-export timeout)")
+	flag.Float64Var(&exportTimeoutSeconds, "export-timeout", defaults.Requests.ExportTimeout.Seconds(), "seconds before each export attempt times out; applied to both the pipeline context and the OTLP SDK client (0 disables the pipeline timeout and keeps the SDK default of 10s)")
 	flag.Var(&scenarioFiles, "scenario-file", "path to scenario JSON file; repeatable")
 	flag.Var(&scenarioFiles, "s", "path to scenario JSON file (shorthand); repeatable")
 	flag.StringVar(&scenarioStrategy, "scenario-strategy", string(scenario.SelectionStrategyRoundRobin), "scenario selection strategy when multiple scenarios: round-robin or random")
@@ -161,6 +161,7 @@ func main() {
 			SlowResponseDelay: slowResponseDelay,
 			TLSCACert:         tlsCACert,
 			TLSSkipVerify:     tlsSkipVerify,
+			ExportTimeout:     cfg.Requests.ExportTimeout.Duration,
 		}
 		factory = otlpFactory
 		_, _ = fmt.Fprintln(os.Stderr, "Running exporter preflight check...")

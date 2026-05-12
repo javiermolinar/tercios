@@ -185,7 +185,7 @@ tercios --scenario-file=my-scenario.json \
 - `--request-interval` seconds between requests
 - `--for` duration in seconds
 - `--ramp-up` ramp-up duration in seconds (linearly ramps exporter workers)
-- `--export-timeout` per-export timeout in seconds (`0` disables per-export timeout)
+- `--export-timeout` per-export timeout in seconds, applied to both the pipeline context and the OTLP SDK client (`0` disables the pipeline timeout and leaves the SDK default of 10s in place; raise this when running with many exporters so burst phases are not aborted by the SDK)
 - `--scenario-file`, `-s` path to scenario JSON (repeatable; uses embedded default if omitted)
 - `--scenario-strategy` scenario selection strategy for multiple scenario files: `round-robin` or `random`
 - `--scenario-run-seed` trace/span ID namespace for scenario mode (`0` auto-random per process)

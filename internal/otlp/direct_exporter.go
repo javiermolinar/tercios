@@ -71,6 +71,9 @@ func (f ExporterFactory) newOTLPClient() (otlptrace.Client, error) {
 		if len(f.Headers) > 0 {
 			options = append(options, otlptracehttp.WithHeaders(f.Headers))
 		}
+		if f.ExportTimeout > 0 {
+			options = append(options, otlptracehttp.WithTimeout(f.ExportTimeout))
+		}
 		if f.SlowResponseDelay > 0 {
 			base := http.DefaultTransport.(*http.Transport).Clone()
 			if tlsCfg, err := f.tlsConfig(); err != nil {
@@ -99,6 +102,9 @@ func (f ExporterFactory) newOTLPClient() (otlptrace.Client, error) {
 	}
 	if len(f.Headers) > 0 {
 		options = append(options, otlptracegrpc.WithHeaders(f.Headers))
+	}
+	if f.ExportTimeout > 0 {
+		options = append(options, otlptracegrpc.WithTimeout(f.ExportTimeout))
 	}
 	return otlptracegrpc.NewClient(options...), nil
 }
