@@ -37,6 +37,7 @@ func main() {
 		chaosPoliciesFile        string
 		chaosSeed                int64
 		dryRun                   bool
+		streaming                bool
 		output                   string
 		summaryTraceIDs          bool
 		summaryTraceIDsLimit     int
@@ -64,6 +65,7 @@ func main() {
 	flag.StringVar(&chaosPoliciesFile, "chaos-policies-file", "", "path to chaos policies JSON file")
 	flag.Int64Var(&chaosSeed, "chaos-seed", 0, "override chaos policy seed (0 uses file/default)")
 	flag.BoolVar(&dryRun, "dry-run", false, "generate traces without exporting to OTLP")
+	flag.BoolVar(&streaming, "streaming", false, "pace each batch by span EndTime so backends see end_times <= wall-clock-now; required for long-running traces. See docs/streaming.md")
 	flag.StringVar(&output, "output", string(otlp.DryRunOutputSummary), "output format: summary or json")
 	flag.StringVar(&output, "o", string(otlp.DryRunOutputSummary), "output format shorthand: summary or json")
 	flag.BoolVar(&summaryTraceIDs, "summary-trace-ids", false, "include sampled trace IDs in summary output")
@@ -171,6 +173,10 @@ func main() {
 		_, _ = fmt.Fprintln(os.Stderr, "Preflight check passed")
 	}
 
+	if streaming {
+		factory = otlp.NewStreamingExporterFactory(factory)
+	}
+
 	runner := pipeline.NewConcurrencyRunner(cfg.Concurrency.Exporters, cfg.Requests.PerExporter)
 	stages := make([]pipeline.BatchStage, 0, 2)
 	files := scenarioFiles.Values()
@@ -213,7 +219,16 @@ func main() {
 		traceIDSampleLimit = summaryTraceIDsLimit
 	}
 	progressInterval := 5 * time.Second
-	err = pipe.RunWithProgress(ctx, runner, factory, cfg.Requests.Interval.Duration, cfg.Requests.For.Duration, cfg.Requests.RampUp.Duration, cfg.Requests.ExportTimeout.Duration, traceIDSampleLimit, progressInterval, os.Stderr)
+	// Streaming exports pace each batch by span EndTime, so a single
+	// ExportBatch call can take the full scenario duration. The pipeline's
+	// per-batch timeout would kill that; disable it when streaming. The
+	// OTLP SDK's own per-request timeout (also set from --export-timeout)
+	// still applies to each inner request inside the streaming exporter.
+	pipelineExportTimeout := cfg.Requests.ExportTimeout.Duration
+	if streaming {
+		pipelineExportTimeout = 0
+	}
+	err = pipe.RunWithProgress(ctx, runner, factory, cfg.Requests.Interval.Duration, cfg.Requests.For.Duration, cfg.Requests.RampUp.Duration, pipelineExportTimeout, traceIDSampleLimit, progressInterval, os.Stderr)
 	summary := metrics.FormatSummary(pipe.Summary())
 	if dryRun && outputFormat == otlp.DryRunOutputJSON {
 		_, _ = fmt.Fprintln(os.Stderr, summary)
