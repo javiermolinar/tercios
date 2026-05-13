@@ -17,10 +17,45 @@ type BatchGenerator interface {
 	GenerateBatch(ctx context.Context) ([]model.Span, error)
 }
 
+// ChildSpec describes a single outgoing edge from a parent node together with
+// the resolved source and target node metadata. It is the unit returned by
+// NextChildren and consumed by both the eager generator and (later) the
+// streaming exporter. ChildSpec intentionally does not carry any per-trace
+// state (trace ID, parent span ID, cursor, already-emitted span IDs); those
+// are resolved at span materialization time by the caller.
+type ChildSpec struct {
+	Edge       Edge
+	SourceNode Node
+	TargetNode Node
+}
+
 type Generator struct {
 	definition Definition
 	outgoing   map[string][]Edge
 	counter    atomic.Uint64
+}
+
+// NextChildren returns the outgoing edges of parentNodeID as ChildSpecs in
+// definition order. The Edge.Repeat field is preserved on the returned spec;
+// expansion of repeats is the caller's responsibility so that consumers can
+// choose between eager looping and streaming scheduling.
+func (g *Generator) NextChildren(parentNodeID string) []ChildSpec {
+	if g == nil {
+		return nil
+	}
+	edges := g.outgoing[parentNodeID]
+	if len(edges) == 0 {
+		return nil
+	}
+	out := make([]ChildSpec, 0, len(edges))
+	for _, edge := range edges {
+		out = append(out, ChildSpec{
+			Edge:       edge,
+			SourceNode: g.definition.Nodes[edge.From],
+			TargetNode: g.definition.Nodes[edge.To],
+		})
+	}
+	return out
 }
 
 func NewGenerator(definition Definition) *Generator {
@@ -95,18 +130,19 @@ func (g *Generator) emitFromNode(
 	idState *spanIDState,
 	nodeSpans map[string]oteltrace.SpanID,
 ) []model.Span {
-	edges := g.outgoing[nodeID]
-	if len(edges) == 0 {
+	children := g.NextChildren(nodeID)
+	if len(children) == 0 {
 		return spans
 	}
 
-	for _, edge := range edges {
+	for _, child := range children {
+		edge := child.Edge
 		links := resolveLinks(traceID, edge.SpanLinks, nodeSpans)
 		events := resolveEvents(edge.SpanEvents)
 
 		for i := 0; i < edge.Repeat; i++ {
-			sourceNode := g.definition.Nodes[edge.From]
-			targetNode := g.definition.Nodes[edge.To]
+			sourceNode := child.SourceNode
+			targetNode := child.TargetNode
 			start := *cursor
 			duration := edge.Duration
 			if duration <= 0 {
