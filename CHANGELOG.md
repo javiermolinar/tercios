@@ -5,6 +5,67 @@ version numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [v0.7.0] — 2026-05-13
+
+This release adds the user-facing `--streaming` mode that v0.6.0's
+`StreamingWalker` set up for. Streaming is implemented as a thin wrapper
+around the OTLP exporter — the pipeline, scenario, and chaos layers are
+unchanged. Eager mode behavior is identical to v0.6.0.
+
+### Added
+
+- **`--streaming` CLI flag** in `tercios`. When set, each batch is paced
+  by span `EndTime` before being forwarded to the OTLP exporter, so
+  backends that reject future timestamps (e.g. Tempo) accept long-running
+  traces. See `docs/streaming.md` once it lands; for now, the flag's
+  `-help` description and `examples/slow_scenario.json` are the entry
+  points.
+- **`internal/otlp.NewStreamingBatchExporter(inner)`** wraps any
+  `model.BatchExporter` so that `ExportBatch` sleeps until each span's
+  `EndTime` (grouped by identical end-times) before calling the inner
+  exporter. Honors `ctx.Done()` mid-sleep; propagates inner errors.
+- **`internal/otlp.NewStreamingExporterFactory(inner)`** wraps a
+  `model.BatchExporterFactory` so every exporter it produces is paced.
+  The CLI installs this when `--streaming` is set.
+- **`examples/slow_scenario.json`** — a 5-second-per-trace scenario for
+  watching streaming pace traces over visible wall-clock time.
+
+### Behavior
+
+- **Timestamps are rebased at export time.** When a paced trace sits in
+  the producer→exporter channel before being pulled, its `EndTime`s are
+  in the past relative to wall-clock now. The streaming exporter shifts
+  every span by `(now - earliest StartTime)` before pacing, so each
+  trace gets its full nominal duration regardless of queuing latency.
+  Without this, streaming would silently degrade to eager for any trace
+  the channel buffered.
+- **`--export-timeout` semantics shift in streaming mode.** In eager
+  mode the pipeline wraps each `ExportBatch` call in
+  `context.WithTimeout(ctx, exportTimeout)`. In streaming mode that
+  would kill a paced trace mid-flight, so the pipeline-level timeout is
+  bypassed when `--streaming` is set. The OTLP SDK's own per-request
+  timeout (also configured from `--export-timeout`) still applies to
+  each inner request inside the streaming exporter.
+- **`--exporters` becomes the in-flight cap in streaming mode.** Each
+  exporter worker handles one paced trace at a time. To run N traces
+  concurrently, set `--exporters=N`. To run streaming and eager traffic
+  simultaneously, run two `tercios` processes side by side.
+- **`add_latency` chaos is now compatible with streaming.** The chaos
+  stage runs before the streaming exporter; the pacer reads the
+  post-chaos `EndTime` and sleeps until then, so the no-future-timestamp
+  guarantee holds even when chaos pushes end times later.
+
+### Internal
+
+- The streaming exporter is in `internal/otlp/`, not `internal/pipeline/`
+  or `internal/scenario/`. The pipeline does not know streaming exists;
+  the scenario package does not know either. All eager-mode tests are
+  unchanged and pass.
+- Nine unit tests in `streaming_exporter_test.go` cover: empty-batch
+  no-op, `EndTime` ordering, grouping by identical `EndTime`, sleep
+  until `EndTime`, rebase of stale timestamps, cancellation, inner
+  error propagation, shutdown forwarding, factory wrapping.
+
 ## [v0.6.0] — 2026-05-13
 
 This release unifies the eager and streaming trace generators behind a single
