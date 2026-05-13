@@ -1,10 +1,9 @@
-# Tercios
+<img width="1024" height="819" alt="Unknown" src="https://github.com/user-attachments/assets/b75377c6-d646-4d5b-b92c-a814feff3345" />
 
 [![Build](https://img.shields.io/github/actions/workflow/status/javiermolinar/tercios/build.yml?branch=main&label=build)](https://github.com/javiermolinar/tercios/actions/workflows/build.yml) [![Test](https://img.shields.io/github/actions/workflow/status/javiermolinar/tercios/test.yml?branch=main&label=test)](https://github.com/javiermolinar/tercios/actions/workflows/test.yml) [![Lint](https://img.shields.io/github/actions/workflow/status/javiermolinar/tercios/lint.yml?branch=main&label=lint)](https://github.com/javiermolinar/tercios/actions/workflows/lint.yml) [![Release](https://img.shields.io/github/v/release/javiermolinar/tercios?display_name=tag)](https://github.com/javiermolinar/tercios/releases) [![License](https://img.shields.io/github/license/javiermolinar/tercios)](./LICENSE)
 
-Tercios is a Swiss-army-knife CLI tool for generating OTLP traces to test collectors and tracing pipelines. It can be used to stress-test your tracing backend, generate complex scenarios, and introduce chaos.
 
-<img width="1024" height="819" alt="Unknown" src="https://github.com/user-attachments/assets/b75377c6-d646-4d5b-b92c-a814feff3345" />
+Tercios is a Swiss-army-knife CLI tool for generating OTLP traces to test collectors and tracing pipelines. It can be used to stress-test your tracing backend, generate complex scenarios, and introduce chaos.
 
 
 ## Installation
