@@ -141,70 +141,105 @@ func (g *Generator) emitFromNode(
 		events := resolveEvents(edge.SpanEvents)
 
 		for i := 0; i < edge.Repeat; i++ {
-			sourceNode := child.SourceNode
-			targetNode := child.TargetNode
-			start := *cursor
-			duration := edge.Duration
-			if duration <= 0 {
-				duration = 1 * time.Millisecond
-			}
-
-			switch edge.Kind {
-			case EdgeKindClientServer:
-				clientID := idState.next()
-				clientSpan := g.newSpan(traceID, clientID, parentSpanID, sourceNode, oteltrace.SpanKindClient, start, duration, edge.SpanAttributes, events, links)
-				clientSpan.Name = edgeSpanName(sourceNode, targetNode)
-				spans = append(spans, clientSpan)
-
-				serverID := idState.next()
-				serverSpan := g.newSpan(traceID, serverID, clientSpan.SpanID, targetNode, oteltrace.SpanKindServer, start, duration, edge.SpanAttributes, nil, nil)
-				nodeSpans[edge.To] = serverID
-				spans = append(spans, serverSpan)
-
-				*cursor = serverSpan.EndTime.Add(1 * time.Millisecond)
-				spans = g.emitFromNode(spans, traceID, serverSpan.SpanID, edge.To, cursor, idState, nodeSpans)
-
-			case EdgeKindProducerConsumer:
-				producerID := idState.next()
-				producerSpan := g.newSpan(traceID, producerID, parentSpanID, sourceNode, oteltrace.SpanKindProducer, start, duration, edge.SpanAttributes, events, links)
-				producerSpan.Name = edgeSpanName(sourceNode, targetNode)
-				spans = append(spans, producerSpan)
-
-				consumerID := idState.next()
-				consumerSpan := g.newSpan(traceID, consumerID, producerSpan.SpanID, targetNode, oteltrace.SpanKindConsumer, start, duration, edge.SpanAttributes, nil, nil)
-				nodeSpans[edge.To] = consumerID
-				spans = append(spans, consumerSpan)
-
-				*cursor = consumerSpan.EndTime.Add(1 * time.Millisecond)
-				spans = g.emitFromNode(spans, traceID, consumerSpan.SpanID, edge.To, cursor, idState, nodeSpans)
-
-			case EdgeKindClientDatabase:
-				clientID := idState.next()
-				clientSpan := g.newSpan(traceID, clientID, parentSpanID, sourceNode, oteltrace.SpanKindClient, start, duration, edge.SpanAttributes, events, links)
-				clientSpan.Name = edgeSpanName(sourceNode, targetNode)
-				spans = append(spans, clientSpan)
-
-				dbID := idState.next()
-				dbSpan := g.newSpan(traceID, dbID, clientSpan.SpanID, targetNode, oteltrace.SpanKindServer, start, duration, edge.SpanAttributes, nil, nil)
-				nodeSpans[edge.To] = dbID
-				spans = append(spans, dbSpan)
-
-				*cursor = dbSpan.EndTime.Add(1 * time.Millisecond)
-				spans = g.emitFromNode(spans, traceID, dbSpan.SpanID, edge.To, cursor, idState, nodeSpans)
-
-			case EdgeKindInternal:
-				internalID := idState.next()
-				internalSpan := g.newSpan(traceID, internalID, parentSpanID, targetNode, oteltrace.SpanKindInternal, start, duration, edge.SpanAttributes, events, links)
-				nodeSpans[edge.To] = internalID
-				spans = append(spans, internalSpan)
-
-				*cursor = internalSpan.EndTime.Add(1 * time.Millisecond)
-				spans = g.emitFromNode(spans, traceID, internalSpan.SpanID, edge.To, cursor, idState, nodeSpans)
-			}
+			result := g.materializeChild(child, traceID, parentSpanID, *cursor, idState, events, links)
+			spans = append(spans, result.Spans...)
+			nodeSpans[edge.To] = result.TargetSpanID
+			*cursor = result.CursorAfter
+			spans = g.emitFromNode(spans, traceID, result.TargetSpanID, edge.To, cursor, idState, nodeSpans)
 		}
 	}
 
 	return spans
+}
+
+// materializedChild is the result of expanding a single ChildSpec traversal
+// into concrete spans. It carries no caller state: the eager emitFromNode
+// loop and (later) the streaming exporter both consume the same value.
+type materializedChild struct {
+	// Spans are the 1 or 2 spans produced for this traversal, in the order
+	// they should appear in the exported batch.
+	Spans []model.Span
+	// TargetSpanID is the span ID that subsequent children of edge.To must
+	// attach to, and is the value to record into nodeSpans[edge.To] for
+	// later link resolution.
+	TargetSpanID oteltrace.SpanID
+	// CursorAfter is the timestamp the caller should advance the per-trace
+	// cursor to before materializing the next sibling or repeat.
+	CursorAfter time.Time
+}
+
+// materializeChild produces the spans for one traversal of child without
+// recursing into its descendants. It does not mutate caller state; the
+// caller is responsible for appending Spans, recording TargetSpanID into
+// nodeSpans, advancing the cursor, and driving recursion.
+func (g *Generator) materializeChild(
+	child ChildSpec,
+	traceID oteltrace.TraceID,
+	parentSpanID oteltrace.SpanID,
+	start time.Time,
+	idState *spanIDState,
+	events []model.Event,
+	links []model.Link,
+) materializedChild {
+	edge := child.Edge
+	duration := edge.Duration
+	if duration <= 0 {
+		duration = 1 * time.Millisecond
+	}
+
+	switch edge.Kind {
+	case EdgeKindClientServer:
+		return g.materializePair(child, traceID, parentSpanID, start, duration, idState, events, links, oteltrace.SpanKindClient, oteltrace.SpanKindServer)
+	case EdgeKindProducerConsumer:
+		return g.materializePair(child, traceID, parentSpanID, start, duration, idState, events, links, oteltrace.SpanKindProducer, oteltrace.SpanKindConsumer)
+	case EdgeKindClientDatabase:
+		return g.materializePair(child, traceID, parentSpanID, start, duration, idState, events, links, oteltrace.SpanKindClient, oteltrace.SpanKindServer)
+	case EdgeKindInternal:
+		internalID := idState.next()
+		internalSpan := g.newSpan(traceID, internalID, parentSpanID, child.TargetNode, oteltrace.SpanKindInternal, start, duration, edge.SpanAttributes, events, links)
+		return materializedChild{
+			Spans:        []model.Span{internalSpan},
+			TargetSpanID: internalID,
+			CursorAfter:  internalSpan.EndTime.Add(1 * time.Millisecond),
+		}
+	}
+
+	// Unknown edge kinds are rejected by Config.Validate; reaching here
+	// would indicate a programming error rather than user input.
+	return materializedChild{TargetSpanID: parentSpanID, CursorAfter: start}
+}
+
+// materializePair emits the two-span pattern shared by ClientServer,
+// ProducerConsumer, and ClientDatabase edges: a source-kind span parented
+// at parentSpanID followed by a target-kind span parented at the source
+// span. Events and links are attached to the first span only, matching
+// the eager path's historical behavior.
+func (g *Generator) materializePair(
+	child ChildSpec,
+	traceID oteltrace.TraceID,
+	parentSpanID oteltrace.SpanID,
+	start time.Time,
+	duration time.Duration,
+	idState *spanIDState,
+	events []model.Event,
+	links []model.Link,
+	firstKind oteltrace.SpanKind,
+	secondKind oteltrace.SpanKind,
+) materializedChild {
+	edge := child.Edge
+
+	firstID := idState.next()
+	firstSpan := g.newSpan(traceID, firstID, parentSpanID, child.SourceNode, firstKind, start, duration, edge.SpanAttributes, events, links)
+	firstSpan.Name = edgeSpanName(child.SourceNode, child.TargetNode)
+
+	secondID := idState.next()
+	secondSpan := g.newSpan(traceID, secondID, firstID, child.TargetNode, secondKind, start, duration, edge.SpanAttributes, nil, nil)
+
+	return materializedChild{
+		Spans:        []model.Span{firstSpan, secondSpan},
+		TargetSpanID: secondID,
+		CursorAfter:  secondSpan.EndTime.Add(1 * time.Millisecond),
+	}
 }
 
 func (g *Generator) newSpan(
