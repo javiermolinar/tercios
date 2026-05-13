@@ -3,8 +3,6 @@
 All notable changes are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 version numbers follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
-
 ## [v0.7.0] — 2026-05-13
 
 This release adds the user-facing `--streaming` mode that v0.6.0's
