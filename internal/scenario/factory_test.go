@@ -6,7 +6,22 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+
+	"github.com/javiermolinar/tercios/internal/model"
 )
+
+// rootSpanName returns the Name of the span with no parent in batch, or
+// the empty string if none is found. Used by tests that previously
+// relied on batch[0].Name when the root was emitted first; under the
+// heap-driven walker the root is emitted last.
+func rootSpanName(batch []model.Span) string {
+	for _, s := range batch {
+		if !s.ParentSpanID.IsValid() {
+			return s.Name
+		}
+	}
+	return ""
+}
 
 func TestNewBatchGeneratorFromFilesSingle(t *testing.T) {
 	dir := t.TempDir()
@@ -27,8 +42,8 @@ func TestNewBatchGeneratorFromFilesSingle(t *testing.T) {
 	if len(batch) == 0 {
 		t.Fatalf("expected non-empty batch")
 	}
-	if batch[0].Name != "root-single" {
-		t.Fatalf("expected root-single, got %q", batch[0].Name)
+	if name := rootSpanName(batch); name != "root-single" {
+		t.Fatalf("expected root-single, got %q", name)
 	}
 }
 
@@ -56,8 +71,8 @@ func TestNewBatchGeneratorFromFilesMultiple(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateBatch() error = %v", err)
 	}
-	if first[0].Name != "root-a" || second[0].Name != "root-b" {
-		t.Fatalf("expected round robin root-a/root-b, got %q/%q", first[0].Name, second[0].Name)
+	if a, b := rootSpanName(first), rootSpanName(second); a != "root-a" || b != "root-b" {
+		t.Fatalf("expected round robin root-a/root-b, got %q/%q", a, b)
 	}
 }
 

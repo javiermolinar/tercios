@@ -25,8 +25,18 @@ func TestGeneratorEmitsExpectedShape(t *testing.T) {
 		t.Fatalf("expected 9 spans, got %d", len(spans))
 	}
 
-	if spans[0].Kind != oteltrace.SpanKindInternal {
-		t.Fatalf("expected root internal span, got %s", spans[0].Kind)
+	var root *model.Span
+	for i := range spans {
+		if !spans[i].ParentSpanID.IsValid() {
+			root = &spans[i]
+			break
+		}
+	}
+	if root == nil {
+		t.Fatalf("no root span found")
+	}
+	if root.Kind != oteltrace.SpanKindInternal {
+		t.Fatalf("expected root internal span, got %s", root.Kind)
 	}
 
 	foundDBServer := false

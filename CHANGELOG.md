@@ -5,6 +5,60 @@ version numbers follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [v0.6.0] — 2026-05-13
+
+This release unifies the eager and streaming trace generators behind a single
+heap-driven walker. The eager `GenerateBatch` API is unchanged; internally
+it now drains the same heap the future streaming exporter uses, with no
+wall-clock pacing.
+
+### Added
+
+- **Public `StreamingWalker` + `NewStreamingWalker`** in `internal/scenario`.
+  Drains a single trace one emit at a time; the caller controls pacing.
+  Methods: `NextEmit`, `NextDueAt`, `Done`, `TraceID`.
+- **`RunSingleTrace(ctx, walker, sink)`** helper that drives a walker to
+  completion with wall-clock pacing (`time.NewTimer` per pop), respecting
+  `ctx.Done()`. The minimal scheduling primitive a future streaming
+  exporter will compose.
+- **`pendingEmit` / `traceState` / `emitHeap` types** as the foundation
+  shared by both modes. The heap orders by `(DueAt asc, IsRoot asc, Seq
+  asc)` so the root sentinel always pops after coincident descendants.
+- **`Generator.stepDuration(child)`**: scenario time one repeat of an
+  edge consumes (`edge.Duration + subtreeDuration[edge.To] + 1ms`).
+  Used to stagger sibling DueAts so the heap-pop order matches
+  sequential DFS pre-order.
+
+### Changed
+
+- **Eager walker replaced** with the heap-driven walker. `emitFromNode`,
+  `walkFrame`, and the cursor-restore sentinel are gone. `materializedChild`
+  no longer carries `ChildrenStart` or `CursorAfter` — the heap walker
+  derives those positions directly from `DueAt` and `subtreeDuration`.
+- **Root span moves from first to last** in `GenerateBatch`'s returned
+  slice. The trace is semantically identical (same span IDs, same
+  parent/child links, same timestamps); only the order in the output
+  blob differs. This matches real OTel SDK emission order, where parents
+  call `Span.End()` after their children complete.
+
+  **User-visible effect**: anything that read `batch[0]` and assumed it
+  was the root needs to find the root by `ParentSpanID.IsValid() ==
+  false`. The internal test helpers in this repo (`rootSpanName`) show
+  the pattern.
+- **Span ID allocation order unchanged** from v0.5.0: the root SpanID
+  is still `idState.next()` first, then descendants in DFS pre-order.
+  Only the emit order in the returned slice differs.
+
+### Internal
+
+- `walker` is the internal trace-emission engine; `GenerateBatch` calls
+  `drain()`, `StreamingWalker` calls `popOne()`. One codebase, two
+  pacing modes.
+- Children of a pair edge with `network_latency_ms > 0` now correctly
+  attach inside the (narrower) target-side span instead of starting
+  before it. Caught by `TestPairEdgeLatencyChildrenFitInsideTarget`
+  failing on a two-level latency scenario during the unification.
+
 ## [v0.5.0] — 2026-05-13
 
 This release focuses on producing **realistic distributed-trace shapes**: spans

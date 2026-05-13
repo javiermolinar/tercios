@@ -73,6 +73,18 @@ func NewGenerator(definition Definition) *Generator {
 	}
 }
 
+// stepDuration returns the scenario time one repeat of child consumes
+// (the edge's own duration + the subtree under its target + a 1ms gap).
+// Used by the walker to stagger sibling DueAts so each sibling fires
+// only after every earlier sibling's full subtree drains.
+func (g *Generator) stepDuration(child ChildSpec) time.Duration {
+	d := child.Edge.Duration
+	if d <= 0 {
+		d = 1 * time.Millisecond
+	}
+	return d + g.subtreeDuration[child.Edge.To] + 1*time.Millisecond
+}
+
 // computeSubtreeDurations returns, per node, the total scenario-time
 // consumed by its outgoing subtree. Same recurrence as estimateDuration.
 func computeSubtreeDurations(rootID string, outgoing map[string][]Edge) map[string]time.Duration {
@@ -103,6 +115,10 @@ func computeSubtreeDurations(rootID string, outgoing map[string][]Edge) map[stri
 	return out
 }
 
+// GenerateBatch produces all spans of one trace by constructing a walker
+// and draining its heap immediately (no wall-clock pacing). The streaming
+// exporter uses the same walker via NewStreamingWalker, popping one emit
+// at a time and waiting until each emit's DueAt before forwarding to OTLP.
 func (g *Generator) GenerateBatch(_ context.Context) ([]model.Span, error) {
 	if g == nil {
 		return nil, fmt.Errorf("scenario generator not configured")
@@ -110,31 +126,165 @@ func (g *Generator) GenerateBatch(_ context.Context) ([]model.Span, error) {
 	if len(g.definition.Nodes) == 0 {
 		return nil, fmt.Errorf("scenario definition has no nodes")
 	}
-
-	sequence := g.counter.Add(1)
-	traceID := traceIDFromSeed(g.definition.Seed, sequence)
-	idState := newSpanIDState(g.definition.Seed, sequence)
-	nodeSpans := make(map[string]oteltrace.SpanID)
-
-	estimated := estimateDuration(g.definition.Root, g.outgoing)
-	if estimated <= 0 {
-		estimated = 100 * time.Millisecond
+	w, err := g.newWalker(time.Now().UTC())
+	if err != nil {
+		return nil, err
 	}
-	base := time.Now().UTC()
+	return w.drain(), nil
+}
 
-	rootNode, ok := g.definition.Nodes[g.definition.Root]
-	if !ok {
+// walker is the trace-emission engine. It owns one trace's mutable state
+// (traceState) and a min-heap of pendingEmit entries keyed on each emit's
+// end_time. Both the eager path (GenerateBatch) and the streaming path
+// (StreamingWalker) consume the same walker; they differ only in pacing.
+type walker struct {
+	g     *Generator
+	trace *traceState
+	heap  *emitHeap
+}
+
+// newWalker constructs a walker for one trace nominally rooted at
+// startedAt. Consumes one sequence number from g.counter so successive
+// walkers from the same Generator emit distinct traces. Pre-allocates
+// the root SpanID and records it in nodeSpans (so descendant links to
+// the root resolve correctly even though the root span itself is
+// materialized last) and seeds the heap with the root sentinel plus
+// root's direct children, siblings staggered by stepDuration so heap-pop
+// order matches the iterative walker's sequential DFS pre-order.
+func (g *Generator) newWalker(startedAt time.Time) (*walker, error) {
+	if _, ok := g.definition.Nodes[g.definition.Root]; !ok {
 		return nil, fmt.Errorf("root node %q not found", g.definition.Root)
 	}
 
-	rootSpanID := idState.next()
-	rootSpan := g.newSpan(traceID, rootSpanID, oteltrace.SpanID{}, rootNode, oteltrace.SpanKindInternal, base, estimated, nil, nil, nil)
-	nodeSpans[g.definition.Root] = rootSpanID
-	spans := []model.Span{rootSpan}
+	sequence := g.counter.Add(1)
+	trace := &traceState{
+		TraceID:   traceIDFromSeed(g.definition.Seed, sequence),
+		StartedAt: startedAt,
+		NodeSpans: make(map[string]oteltrace.SpanID),
+		IDState:   newSpanIDState(g.definition.Seed, sequence),
+	}
 
-	cursor := base.Add(1 * time.Millisecond)
-	spans = g.emitFromNode(spans, traceID, rootSpan.SpanID, g.definition.Root, &cursor, idState, nodeSpans)
-	return spans, nil
+	estimated := g.subtreeDuration[g.definition.Root]
+	if estimated <= 0 {
+		estimated = 100 * time.Millisecond
+	}
+
+	rootSpanID := trace.IDState.next()
+	trace.NodeSpans[g.definition.Root] = rootSpanID
+
+	w := &walker{g: g, trace: trace, heap: &emitHeap{}}
+
+	// Push root's direct children. Each child's DueAt = childBase + effDur
+	// so the heap key is the child's end_time. base advances by the full
+	// step (D + subtree + 1ms) * Repeat between siblings so the next
+	// sibling fires only after every earlier sibling's full subtree drains.
+	base := startedAt.Add(1 * time.Millisecond)
+	for _, child := range g.NextChildren(g.definition.Root) {
+		cd := child.Edge.Duration
+		if cd <= 0 {
+			cd = 1 * time.Millisecond
+		}
+		effDur := cd + g.subtreeDuration[child.Edge.To]
+		w.heap.PushEmit(&pendingEmit{
+			DueAt:            base.Add(effDur),
+			Trace:            trace,
+			Child:            child,
+			ParentSpanID:     rootSpanID,
+			RemainingRepeats: child.Edge.Repeat,
+		})
+		trace.InFlight++
+		base = base.Add(time.Duration(child.Edge.Repeat) * g.stepDuration(child))
+	}
+
+	// Root sentinel last. Its DueAt = startedAt + subtreeDuration[root]
+	// equals the largest descendant end_time; the IsRoot tiebreaker in
+	// emitHeap.Less ensures root pops after every coincident descendant.
+	w.heap.PushEmit(&pendingEmit{
+		DueAt:  startedAt.Add(estimated),
+		Trace:  trace,
+		IsRoot: true,
+	})
+	trace.InFlight++
+	return w, nil
+}
+
+// done reports whether the walker has emitted every span of its trace.
+func (w *walker) done() bool { return w.heap.Len() == 0 }
+
+// drain pops every remaining emit and returns the concatenated spans.
+// Used by GenerateBatch.
+func (w *walker) drain() []model.Span {
+	var out []model.Span
+	for !w.done() {
+		out = append(out, w.popOne()...)
+	}
+	return out
+}
+
+// popOne pops the heap's earliest emit, materializes its span(s), and
+// pushes that emit's children and (if repeats remain) self-back onto
+// the heap. Returns the spans produced by this single emit.
+func (w *walker) popOne() []model.Span {
+	emit := w.heap.PopMin()
+
+	if emit.IsRoot {
+		rootNode := w.g.definition.Nodes[w.g.definition.Root]
+		rootSpanID := w.trace.NodeSpans[w.g.definition.Root]
+		duration := emit.DueAt.Sub(w.trace.StartedAt)
+		rootSpan := w.g.newSpan(w.trace.TraceID, rootSpanID, oteltrace.SpanID{}, rootNode, oteltrace.SpanKindInternal, w.trace.StartedAt, duration, nil, nil, nil)
+		w.trace.InFlight--
+		return []model.Span{rootSpan}
+	}
+
+	// Lazy-resolve events/links on first pop; reused across repeats.
+	if !emit.Resolved {
+		emit.Events = resolveEvents(emit.Child.Edge.SpanEvents)
+		emit.Links = resolveLinks(w.trace.TraceID, emit.Child.Edge.SpanLinks, w.trace.NodeSpans)
+		emit.Resolved = true
+	}
+
+	d := emit.Child.Edge.Duration
+	if d <= 0 {
+		d = 1 * time.Millisecond
+	}
+	effDur := d + w.g.subtreeDuration[emit.Child.Edge.To]
+	start := emit.DueAt.Add(-effDur)
+
+	result := w.g.materializeChild(emit.Child, w.trace.TraceID, emit.ParentSpanID, start, w.trace.IDState, emit.Events, emit.Links)
+	w.trace.NodeSpans[emit.Child.Edge.To] = result.TargetSpanID
+
+	// Children attach to the target-side span (server/consumer/db span
+	// for pair edges, the single span for Internal). With latency > 0
+	// the target span starts at start + latency, so the child base is
+	// target.start + 1ms = start + latency + 1ms. For Internal edges and
+	// latency==0 pair edges this reduces to start + 1ms.
+	childBase := start.Add(emit.Child.Edge.NetworkLatency).Add(1 * time.Millisecond)
+	for _, child := range w.g.NextChildren(emit.Child.Edge.To) {
+		cd := child.Edge.Duration
+		if cd <= 0 {
+			cd = 1 * time.Millisecond
+		}
+		childEffDur := cd + w.g.subtreeDuration[child.Edge.To]
+		w.heap.PushEmit(&pendingEmit{
+			DueAt:            childBase.Add(childEffDur),
+			Trace:            w.trace,
+			Child:            child,
+			ParentSpanID:     result.TargetSpanID,
+			RemainingRepeats: child.Edge.Repeat,
+		})
+		w.trace.InFlight++
+		childBase = childBase.Add(time.Duration(child.Edge.Repeat) * w.g.stepDuration(child))
+	}
+
+	emit.RemainingRepeats--
+	if emit.RemainingRepeats > 0 {
+		emit.DueAt = emit.DueAt.Add(w.g.stepDuration(emit.Child))
+		w.heap.PushEmit(emit)
+	} else {
+		w.trace.InFlight--
+	}
+
+	return result.Spans
 }
 
 type spanIDState struct {
@@ -158,116 +308,13 @@ func (s *spanIDState) next() oteltrace.SpanID {
 	return id
 }
 
-// walkFrame is one pending child-edge expansion. Events/Links are
-// resolved lazily on first pop and cached across repeats. A frame with
-// Restore != zero is a cursor-restore sentinel: on pop the walker sets
-// *cursor = Restore (no materialization) so siblings of a just-drained
-// parent start at parent.CursorAfter instead of mid-subtree.
-type walkFrame struct {
-	Child            ChildSpec
-	ParentSpanID     oteltrace.SpanID
-	RemainingRepeats int
-	Events           []model.Event
-	Links            []model.Link
-	Resolved         bool
-	Restore          time.Time
-}
-
-// emitFromNode walks nodeID's descendants iteratively via a LIFO stack,
-// preserving the original recursive DFS pre-order. Swapping the stack
-// for a min-heap on emit-time is the seam the streaming exporter reuses.
-func (g *Generator) emitFromNode(
-	spans []model.Span,
-	traceID oteltrace.TraceID,
-	parentSpanID oteltrace.SpanID,
-	nodeID string,
-	cursor *time.Time,
-	idState *spanIDState,
-	nodeSpans map[string]oteltrace.SpanID,
-) []model.Span {
-	initial := g.NextChildren(nodeID)
-	if len(initial) == 0 {
-		return spans
-	}
-
-	// Seed: push the initial children in reverse so the leftmost sibling
-	// (definition order) ends up on top and pops first.
-	stack := make([]walkFrame, 0, len(initial))
-	for i := len(initial) - 1; i >= 0; i-- {
-		stack = append(stack, walkFrame{
-			Child:            initial[i],
-			ParentSpanID:     parentSpanID,
-			RemainingRepeats: initial[i].Edge.Repeat,
-		})
-	}
-
-	for len(stack) > 0 {
-		top := len(stack) - 1
-		frame := stack[top]
-		stack = stack[:top]
-
-		// Cursor-restore sentinel: the parent edge that pushed this frame
-		// has now had its full subtree drained, so revert *cursor to the
-		// position where the parent's NEXT sibling or repeat must start.
-		if !frame.Restore.IsZero() {
-			*cursor = frame.Restore
-			continue
-		}
-
-		// Resolve events/links exactly once per frame, on the first pop.
-		// At this point nodeSpans contains every span emitted by preceding
-		// siblings' fully-drained subtrees, which matches the moment the
-		// recursive code reached `links := resolveLinks(...)` for this edge.
-		if !frame.Resolved {
-			frame.Events = resolveEvents(frame.Child.Edge.SpanEvents)
-			frame.Links = resolveLinks(traceID, frame.Child.Edge.SpanLinks, nodeSpans)
-			frame.Resolved = true
-		}
-
-		result := g.materializeChild(frame.Child, traceID, frame.ParentSpanID, *cursor, idState, frame.Events, frame.Links)
-		spans = append(spans, result.Spans...)
-		nodeSpans[frame.Child.Edge.To] = result.TargetSpanID
-
-		// Children of this just-materialized parent start INSIDE the
-		// parent's interval at ChildrenStart, not after it. The sentinel
-		// pushed below restores *cursor to CursorAfter once the children
-		// (and their subtrees) have fully drained, so the next sibling or
-		// repeat at the parent's level fires at parent.end + 1ms.
-		*cursor = result.ChildrenStart
-
-		frame.RemainingRepeats--
-
-		// Push order (bottom to top of the stack): self-back for the next
-		// repeat, restore sentinel, children of edge.To (leftmost on top).
-		// Pop order is therefore: children drain → sentinel restores cursor
-		// → self-back materializes the next repeat at parent.CursorAfter.
-		if frame.RemainingRepeats > 0 {
-			stack = append(stack, frame)
-		}
-		stack = append(stack, walkFrame{Restore: result.CursorAfter})
-
-		nextChildren := g.NextChildren(frame.Child.Edge.To)
-		for i := len(nextChildren) - 1; i >= 0; i-- {
-			stack = append(stack, walkFrame{
-				Child:            nextChildren[i],
-				ParentSpanID:     result.TargetSpanID,
-				RemainingRepeats: nextChildren[i].Edge.Repeat,
-			})
-		}
-	}
-
-	return spans
-}
-
-// materializedChild is the result of expanding one ChildSpec traversal.
-// ChildrenStart (= span.start + 1ms) positions children inside the
-// parent; CursorAfter (= span.end + 1ms) positions the next sibling at
-// the same level.
+// materializedChild is the result of expanding one ChildSpec traversal
+// into concrete spans. The walker uses TargetSpanID to populate nodeSpans
+// and derives all timing from emit.DueAt + g.subtreeDuration, so this
+// struct no longer carries ChildrenStart or CursorAfter fields.
 type materializedChild struct {
-	Spans         []model.Span
-	TargetSpanID  oteltrace.SpanID // value to record in nodeSpans[edge.To]
-	ChildrenStart time.Time
-	CursorAfter   time.Time
+	Spans        []model.Span
+	TargetSpanID oteltrace.SpanID
 }
 
 // materializeChild produces the spans for one traversal of child without
@@ -304,16 +351,14 @@ func (g *Generator) materializeChild(
 		internalID := idState.next()
 		internalSpan := g.newSpan(traceID, internalID, parentSpanID, child.TargetNode, oteltrace.SpanKindInternal, start, effDur, edge.SpanAttributes, events, links)
 		return materializedChild{
-			Spans:         []model.Span{internalSpan},
-			TargetSpanID:  internalID,
-			ChildrenStart: internalSpan.StartTime.Add(1 * time.Millisecond),
-			CursorAfter:   internalSpan.EndTime.Add(1 * time.Millisecond),
+			Spans:        []model.Span{internalSpan},
+			TargetSpanID: internalID,
 		}
 	}
 
 	// Unknown edge kinds are rejected by Config.Validate; reaching here
 	// would indicate a programming error rather than user input.
-	return materializedChild{TargetSpanID: parentSpanID, ChildrenStart: start, CursorAfter: start}
+	return materializedChild{TargetSpanID: parentSpanID}
 }
 
 // materializePair emits the source/target two-span pattern for non-Internal
@@ -345,10 +390,8 @@ func (g *Generator) materializePair(
 	secondSpan := g.newSpan(traceID, secondID, firstID, child.TargetNode, secondKind, secondStart, secondDur, edge.SpanAttributes, nil, nil)
 
 	return materializedChild{
-		Spans:         []model.Span{firstSpan, secondSpan},
-		TargetSpanID:  secondID,
-		ChildrenStart: secondSpan.StartTime.Add(1 * time.Millisecond),
-		CursorAfter:   firstSpan.EndTime.Add(1 * time.Millisecond),
+		Spans:        []model.Span{firstSpan, secondSpan},
+		TargetSpanID: secondID,
 	}
 }
 

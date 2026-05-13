@@ -23,8 +23,8 @@ func TestMultiGeneratorRoundRobin(t *testing.T) {
 		if len(batch) == 0 {
 			t.Fatalf("expected non-empty batch")
 		}
-		if batch[0].Name != want[i] {
-			t.Fatalf("iteration %d: expected %q, got %q", i, want[i], batch[0].Name)
+		if name := rootSpanName(batch); name != want[i] {
+			t.Fatalf("iteration %d: expected %q, got %q", i, want[i], name)
 		}
 	}
 }
@@ -57,8 +57,8 @@ func TestMultiGeneratorRandomDeterministicSelection(t *testing.T) {
 		if len(b1) == 0 || len(b2) == 0 {
 			t.Fatalf("expected non-empty batches")
 		}
-		if b1[0].Name != b2[0].Name {
-			t.Fatalf("iteration %d: expected same selected scenario, got %q vs %q", i, b1[0].Name, b2[0].Name)
+		if n1, n2 := rootSpanName(b1), rootSpanName(b2); n1 != n2 {
+			t.Fatalf("iteration %d: expected same selected scenario, got %q vs %q", i, n1, n2)
 		}
 	}
 }
