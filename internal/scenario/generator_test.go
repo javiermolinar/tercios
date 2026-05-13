@@ -67,7 +67,7 @@ func TestGeneratorDeterministicTraceIDForFirstBatch(t *testing.T) {
 	}
 }
 
-func testDefinition(t *testing.T) Definition {
+func testDefinition(t testing.TB) Definition {
 	t.Helper()
 	cfg := Config{
 		Name: "test",
@@ -174,5 +174,29 @@ func TestEstimateDurationPositive(t *testing.T) {
 	d := estimateDuration("a", outgoing)
 	if d <= 0 {
 		t.Fatalf("expected positive estimate, got %s", d)
+	}
+}
+
+// BenchmarkGenerateBatch measures the cost of producing one trace from the
+// shared test definition (9 spans). It exercises the iterative walker,
+// span materialization, and per-span allocations, but excludes any OTLP
+// encoding or export. ReportAllocs is enabled so the heap pressure of the
+// walker (stack frames, per-pop NextChildren slices, events/links) is
+// visible alongside ns/op.
+func BenchmarkGenerateBatch(b *testing.B) {
+	definition := testDefinition(b)
+	generator := NewGenerator(definition)
+	ctx := context.Background()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		spans, err := generator.GenerateBatch(ctx)
+		if err != nil {
+			b.Fatalf("GenerateBatch: %v", err)
+		}
+		if len(spans) == 0 {
+			b.Fatalf("GenerateBatch returned no spans")
+		}
 	}
 }

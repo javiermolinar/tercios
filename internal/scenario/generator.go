@@ -36,9 +36,11 @@ type Generator struct {
 }
 
 // NextChildren returns the outgoing edges of parentNodeID as ChildSpecs in
-// definition order. The Edge.Repeat field is preserved on the returned spec;
-// expansion of repeats is the caller's responsibility so that consumers can
-// choose between eager looping and streaming scheduling.
+// definition order. The returned slice is freshly allocated on every call
+// so callers may freely mutate it without affecting future calls or other
+// consumers. The Edge.Repeat field is preserved on the returned spec;
+// expansion of repeats is the caller's responsibility so that consumers
+// can choose between eager looping and streaming scheduling.
 func (g *Generator) NextChildren(parentNodeID string) []ChildSpec {
 	if g == nil {
 		return nil
@@ -121,6 +123,29 @@ func (s *spanIDState) next() oteltrace.SpanID {
 	return id
 }
 
+// walkFrame is one pending child-edge expansion in the iterative walker.
+// Events and Links are resolved on first pop (when nodeSpans reflects every
+// span emitted by preceding siblings' subtrees) and cached across repeats
+// so that resolution semantics match the original recursive walker.
+type walkFrame struct {
+	Child            ChildSpec
+	ParentSpanID     oteltrace.SpanID
+	RemainingRepeats int
+	Events           []model.Event
+	Links            []model.Link
+	Resolved         bool
+}
+
+// emitFromNode walks every descendant of nodeID iteratively, using a LIFO
+// stack to reproduce the depth-first pre-order traversal that the previous
+// recursive implementation produced. Output is byte-identical for any
+// scenario: span order, ID allocation order, cursor accumulation, and
+// link/event resolution timing are all preserved.
+//
+// The stack is also the seam the streaming/long-running exporter will reuse:
+// swap this LIFO for a min-heap keyed on emit-time and the rest of the
+// machinery (materializeChild, nodeSpans, the Resolved-once invariant) is
+// unchanged.
 func (g *Generator) emitFromNode(
 	spans []model.Span,
 	traceID oteltrace.TraceID,
@@ -130,22 +155,60 @@ func (g *Generator) emitFromNode(
 	idState *spanIDState,
 	nodeSpans map[string]oteltrace.SpanID,
 ) []model.Span {
-	children := g.NextChildren(nodeID)
-	if len(children) == 0 {
+	initial := g.NextChildren(nodeID)
+	if len(initial) == 0 {
 		return spans
 	}
 
-	for _, child := range children {
-		edge := child.Edge
-		links := resolveLinks(traceID, edge.SpanLinks, nodeSpans)
-		events := resolveEvents(edge.SpanEvents)
+	// Seed: push the initial children in reverse so the leftmost sibling
+	// (definition order) ends up on top and pops first.
+	stack := make([]walkFrame, 0, len(initial))
+	for i := len(initial) - 1; i >= 0; i-- {
+		stack = append(stack, walkFrame{
+			Child:            initial[i],
+			ParentSpanID:     parentSpanID,
+			RemainingRepeats: initial[i].Edge.Repeat,
+		})
+	}
 
-		for i := 0; i < edge.Repeat; i++ {
-			result := g.materializeChild(child, traceID, parentSpanID, *cursor, idState, events, links)
-			spans = append(spans, result.Spans...)
-			nodeSpans[edge.To] = result.TargetSpanID
-			*cursor = result.CursorAfter
-			spans = g.emitFromNode(spans, traceID, result.TargetSpanID, edge.To, cursor, idState, nodeSpans)
+	for len(stack) > 0 {
+		top := len(stack) - 1
+		frame := stack[top]
+		stack = stack[:top]
+
+		// Resolve events/links exactly once per frame, on the first pop.
+		// At this point nodeSpans contains every span emitted by preceding
+		// siblings' fully-drained subtrees, which matches the moment the
+		// recursive code reached `links := resolveLinks(...)` for this edge.
+		if !frame.Resolved {
+			frame.Events = resolveEvents(frame.Child.Edge.SpanEvents)
+			frame.Links = resolveLinks(traceID, frame.Child.Edge.SpanLinks, nodeSpans)
+			frame.Resolved = true
+		}
+
+		result := g.materializeChild(frame.Child, traceID, frame.ParentSpanID, *cursor, idState, frame.Events, frame.Links)
+		spans = append(spans, result.Spans...)
+		nodeSpans[frame.Child.Edge.To] = result.TargetSpanID
+		*cursor = result.CursorAfter
+
+		frame.RemainingRepeats--
+
+		// Push order matters: the next repeat of this frame (if any) must
+		// sit BELOW the just-emitted target's children so that the subtree
+		// drains fully before the next repeat fires. This mirrors the
+		// recursive code where each `emitFromNode(...)` call returned
+		// before the next `i++` of the repeat loop.
+		if frame.RemainingRepeats > 0 {
+			stack = append(stack, frame)
+		}
+
+		nextChildren := g.NextChildren(frame.Child.Edge.To)
+		for i := len(nextChildren) - 1; i >= 0; i-- {
+			stack = append(stack, walkFrame{
+				Child:            nextChildren[i],
+				ParentSpanID:     result.TargetSpanID,
+				RemainingRepeats: nextChildren[i].Edge.Repeat,
+			})
 		}
 	}
 
