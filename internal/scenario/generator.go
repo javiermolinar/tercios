@@ -30,9 +30,10 @@ type ChildSpec struct {
 }
 
 type Generator struct {
-	definition Definition
-	outgoing   map[string][]Edge
-	counter    atomic.Uint64
+	definition      Definition
+	outgoing        map[string][]Edge
+	subtreeDuration map[string]time.Duration
+	counter         atomic.Uint64
 }
 
 // NextChildren returns the outgoing edges of parentNodeID as ChildSpecs in
@@ -65,7 +66,44 @@ func NewGenerator(definition Definition) *Generator {
 	for _, edge := range definition.Edges {
 		outgoing[edge.From] = append(outgoing[edge.From], edge)
 	}
-	return &Generator{definition: definition, outgoing: outgoing}
+	return &Generator{
+		definition:      definition,
+		outgoing:        outgoing,
+		subtreeDuration: computeSubtreeDurations(definition.Root, outgoing),
+	}
+}
+
+// computeSubtreeDurations walks the DAG once from rootID and returns the
+// total scenario-time consumed by every visited node's outgoing subtree.
+// The formula matches estimateDuration's so a node's effective span
+// duration (edge.Duration + subtreeDuration[edge.To]) is consistent with
+// the scenario timeline.
+func computeSubtreeDurations(rootID string, outgoing map[string][]Edge) map[string]time.Duration {
+	out := make(map[string]time.Duration, len(outgoing))
+	var walk func(id string) time.Duration
+	walk = func(id string) time.Duration {
+		if v, ok := out[id]; ok {
+			return v
+		}
+		edges := outgoing[id]
+		if len(edges) == 0 {
+			out[id] = 0
+			return 0
+		}
+		total := time.Duration(0)
+		for _, edge := range edges {
+			d := edge.Duration
+			if d <= 0 {
+				d = 1 * time.Millisecond
+			}
+			step := d + walk(edge.To) + 1*time.Millisecond
+			total += time.Duration(edge.Repeat) * step
+		}
+		out[id] = total
+		return total
+	}
+	walk(rootID)
+	return out
 }
 
 func (g *Generator) GenerateBatch(_ context.Context) ([]model.Span, error) {
@@ -127,6 +165,15 @@ func (s *spanIDState) next() oteltrace.SpanID {
 // Events and Links are resolved on first pop (when nodeSpans reflects every
 // span emitted by preceding siblings' subtrees) and cached across repeats
 // so that resolution semantics match the original recursive walker.
+//
+// A frame with Restore != zero is a cursor-restore sentinel rather than a
+// real edge to materialize: when popped, the walker sets *cursor = Restore
+// and continues. Sentinels are pushed immediately after a parent edge is
+// materialized so the cursor reverts to the parent's CursorAfter (= the
+// next-sibling timestamp) once the parent's subtree drains. This is what
+// gives parent spans temporal containment over their children: children
+// pop at parent.ChildrenStart, the sentinel restores cursor for the
+// parent's next sibling or repeat.
 type walkFrame struct {
 	Child            ChildSpec
 	ParentSpanID     oteltrace.SpanID
@@ -134,6 +181,7 @@ type walkFrame struct {
 	Events           []model.Event
 	Links            []model.Link
 	Resolved         bool
+	Restore          time.Time
 }
 
 // emitFromNode walks every descendant of nodeID iteratively, using a LIFO
@@ -176,6 +224,14 @@ func (g *Generator) emitFromNode(
 		frame := stack[top]
 		stack = stack[:top]
 
+		// Cursor-restore sentinel: the parent edge that pushed this frame
+		// has now had its full subtree drained, so revert *cursor to the
+		// position where the parent's NEXT sibling or repeat must start.
+		if !frame.Restore.IsZero() {
+			*cursor = frame.Restore
+			continue
+		}
+
 		// Resolve events/links exactly once per frame, on the first pop.
 		// At this point nodeSpans contains every span emitted by preceding
 		// siblings' fully-drained subtrees, which matches the moment the
@@ -189,18 +245,24 @@ func (g *Generator) emitFromNode(
 		result := g.materializeChild(frame.Child, traceID, frame.ParentSpanID, *cursor, idState, frame.Events, frame.Links)
 		spans = append(spans, result.Spans...)
 		nodeSpans[frame.Child.Edge.To] = result.TargetSpanID
-		*cursor = result.CursorAfter
+
+		// Children of this just-materialized parent start INSIDE the
+		// parent's interval at ChildrenStart, not after it. The sentinel
+		// pushed below restores *cursor to CursorAfter once the children
+		// (and their subtrees) have fully drained, so the next sibling or
+		// repeat at the parent's level fires at parent.end + 1ms.
+		*cursor = result.ChildrenStart
 
 		frame.RemainingRepeats--
 
-		// Push order matters: the next repeat of this frame (if any) must
-		// sit BELOW the just-emitted target's children so that the subtree
-		// drains fully before the next repeat fires. This mirrors the
-		// recursive code where each `emitFromNode(...)` call returned
-		// before the next `i++` of the repeat loop.
+		// Push order (bottom to top of the stack): self-back for the next
+		// repeat, restore sentinel, children of edge.To (leftmost on top).
+		// Pop order is therefore: children drain → sentinel restores cursor
+		// → self-back materializes the next repeat at parent.CursorAfter.
 		if frame.RemainingRepeats > 0 {
 			stack = append(stack, frame)
 		}
+		stack = append(stack, walkFrame{Restore: result.CursorAfter})
 
 		nextChildren := g.NextChildren(frame.Child.Edge.To)
 		for i := len(nextChildren) - 1; i >= 0; i-- {
@@ -218,6 +280,15 @@ func (g *Generator) emitFromNode(
 // materializedChild is the result of expanding a single ChildSpec traversal
 // into concrete spans. It carries no caller state: the eager emitFromNode
 // loop and (later) the streaming exporter both consume the same value.
+//
+// The two cursor outputs encode parent-contains-child timing:
+//
+//   - ChildrenStart is where the first child of this traversal's target
+//     must begin (= the span's start + 1ms), so children fall INSIDE the
+//     parent's [start, end] interval.
+//   - CursorAfter is where the parent's next sibling or next repeat at
+//     the same level must begin (= the span's end + 1ms, where end
+//     already covers the parent's full subtree work via effective duration).
 type materializedChild struct {
 	// Spans are the 1 or 2 spans produced for this traversal, in the order
 	// they should appear in the exported batch.
@@ -226,8 +297,13 @@ type materializedChild struct {
 	// attach to, and is the value to record into nodeSpans[edge.To] for
 	// later link resolution.
 	TargetSpanID oteltrace.SpanID
-	// CursorAfter is the timestamp the caller should advance the per-trace
-	// cursor to before materializing the next sibling or repeat.
+	// ChildrenStart is the timestamp at which the first child of
+	// edge.To should begin its span; equal to the produced span's
+	// StartTime + 1ms.
+	ChildrenStart time.Time
+	// CursorAfter is the timestamp the caller should advance the cursor
+	// to before materializing the next sibling or repeat of THIS edge;
+	// equal to the produced span's EndTime + 1ms.
 	CursorAfter time.Time
 }
 
@@ -250,26 +326,33 @@ func (g *Generator) materializeChild(
 		duration = 1 * time.Millisecond
 	}
 
+	// effDur = own edge duration + full subtree work of edge.To, so the
+	// produced span(s) end_time covers every descendant span's end_time.
+	// This is what makes the trace's parent spans temporally contain
+	// their children (matching real OTel SDK semantics).
+	effDur := duration + g.subtreeDuration[edge.To]
+
 	switch edge.Kind {
 	case EdgeKindClientServer:
-		return g.materializePair(child, traceID, parentSpanID, start, duration, idState, events, links, oteltrace.SpanKindClient, oteltrace.SpanKindServer)
+		return g.materializePair(child, traceID, parentSpanID, start, effDur, idState, events, links, oteltrace.SpanKindClient, oteltrace.SpanKindServer)
 	case EdgeKindProducerConsumer:
-		return g.materializePair(child, traceID, parentSpanID, start, duration, idState, events, links, oteltrace.SpanKindProducer, oteltrace.SpanKindConsumer)
+		return g.materializePair(child, traceID, parentSpanID, start, effDur, idState, events, links, oteltrace.SpanKindProducer, oteltrace.SpanKindConsumer)
 	case EdgeKindClientDatabase:
-		return g.materializePair(child, traceID, parentSpanID, start, duration, idState, events, links, oteltrace.SpanKindClient, oteltrace.SpanKindServer)
+		return g.materializePair(child, traceID, parentSpanID, start, effDur, idState, events, links, oteltrace.SpanKindClient, oteltrace.SpanKindServer)
 	case EdgeKindInternal:
 		internalID := idState.next()
-		internalSpan := g.newSpan(traceID, internalID, parentSpanID, child.TargetNode, oteltrace.SpanKindInternal, start, duration, edge.SpanAttributes, events, links)
+		internalSpan := g.newSpan(traceID, internalID, parentSpanID, child.TargetNode, oteltrace.SpanKindInternal, start, effDur, edge.SpanAttributes, events, links)
 		return materializedChild{
-			Spans:        []model.Span{internalSpan},
-			TargetSpanID: internalID,
-			CursorAfter:  internalSpan.EndTime.Add(1 * time.Millisecond),
+			Spans:         []model.Span{internalSpan},
+			TargetSpanID:  internalID,
+			ChildrenStart: internalSpan.StartTime.Add(1 * time.Millisecond),
+			CursorAfter:   internalSpan.EndTime.Add(1 * time.Millisecond),
 		}
 	}
 
 	// Unknown edge kinds are rejected by Config.Validate; reaching here
 	// would indicate a programming error rather than user input.
-	return materializedChild{TargetSpanID: parentSpanID, CursorAfter: start}
+	return materializedChild{TargetSpanID: parentSpanID, ChildrenStart: start, CursorAfter: start}
 }
 
 // materializePair emits the two-span pattern shared by ClientServer,
@@ -282,7 +365,7 @@ func (g *Generator) materializePair(
 	traceID oteltrace.TraceID,
 	parentSpanID oteltrace.SpanID,
 	start time.Time,
-	duration time.Duration,
+	effDur time.Duration,
 	idState *spanIDState,
 	events []model.Event,
 	links []model.Link,
@@ -292,16 +375,17 @@ func (g *Generator) materializePair(
 	edge := child.Edge
 
 	firstID := idState.next()
-	firstSpan := g.newSpan(traceID, firstID, parentSpanID, child.SourceNode, firstKind, start, duration, edge.SpanAttributes, events, links)
+	firstSpan := g.newSpan(traceID, firstID, parentSpanID, child.SourceNode, firstKind, start, effDur, edge.SpanAttributes, events, links)
 	firstSpan.Name = edgeSpanName(child.SourceNode, child.TargetNode)
 
 	secondID := idState.next()
-	secondSpan := g.newSpan(traceID, secondID, firstID, child.TargetNode, secondKind, start, duration, edge.SpanAttributes, nil, nil)
+	secondSpan := g.newSpan(traceID, secondID, firstID, child.TargetNode, secondKind, start, effDur, edge.SpanAttributes, nil, nil)
 
 	return materializedChild{
-		Spans:        []model.Span{firstSpan, secondSpan},
-		TargetSpanID: secondID,
-		CursorAfter:  secondSpan.EndTime.Add(1 * time.Millisecond),
+		Spans:         []model.Span{firstSpan, secondSpan},
+		TargetSpanID:  secondID,
+		ChildrenStart: secondSpan.StartTime.Add(1 * time.Millisecond),
+		CursorAfter:   secondSpan.EndTime.Add(1 * time.Millisecond),
 	}
 }
 
