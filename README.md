@@ -20,7 +20,7 @@ Or download prebuilt binaries and checksums from [GitHub Releases](https://githu
 
 Published multi-architecture images are available on Docker Hub. Use version tags for CI and other programmatic use; `latest` tracks the newest published image.
 
-- `javimolinar/tercios:v0.4.0`
+- `javimolinar/tercios:v0.7.0`
 - `javimolinar/tercios:latest`
 
 
