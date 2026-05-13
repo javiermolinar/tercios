@@ -30,9 +30,10 @@ type ChildSpec struct {
 }
 
 type Generator struct {
-	definition Definition
-	outgoing   map[string][]Edge
-	counter    atomic.Uint64
+	definition      Definition
+	outgoing        map[string][]Edge
+	subtreeDuration map[string]time.Duration
+	counter         atomic.Uint64
 }
 
 // NextChildren returns the outgoing edges of parentNodeID as ChildSpecs in
@@ -65,7 +66,56 @@ func NewGenerator(definition Definition) *Generator {
 	for _, edge := range definition.Edges {
 		outgoing[edge.From] = append(outgoing[edge.From], edge)
 	}
-	return &Generator{definition: definition, outgoing: outgoing}
+	subtreeDuration := computeSubtreeDurations(definition.Root, outgoing)
+	return &Generator{
+		definition:      definition,
+		outgoing:        outgoing,
+		subtreeDuration: subtreeDuration,
+	}
+}
+
+// computeSubtreeDurations walks the DAG once from rootID and returns, for
+// every visited node, the total scenario-time consumed by its outgoing
+// subtree. The formula matches estimateDuration exactly so that streaming
+// DueAt arithmetic stays in lockstep with the eager walker's cursor.
+func computeSubtreeDurations(rootID string, outgoing map[string][]Edge) map[string]time.Duration {
+	out := make(map[string]time.Duration, len(outgoing))
+	var walk func(id string) time.Duration
+	walk = func(id string) time.Duration {
+		if v, ok := out[id]; ok {
+			return v
+		}
+		edges := outgoing[id]
+		if len(edges) == 0 {
+			out[id] = 0
+			return 0
+		}
+		total := time.Duration(0)
+		for _, edge := range edges {
+			d := edge.Duration
+			if d <= 0 {
+				d = 1 * time.Millisecond
+			}
+			step := d + walk(edge.To) + 1*time.Millisecond
+			total += time.Duration(edge.Repeat) * step
+		}
+		out[id] = total
+		return total
+	}
+	walk(rootID)
+	return out
+}
+
+// stepDuration returns the total scenario-time consumed by one full repeat
+// of child (the edge's own span plus its target's subtree plus a 1ms gap).
+// It is the unit by which streaming DueAt arithmetic advances when
+// staggering sibling siblings or pushing a self-back for the next repeat.
+func (g *Generator) stepDuration(child ChildSpec) time.Duration {
+	d := child.Edge.Duration
+	if d <= 0 {
+		d = 1 * time.Millisecond
+	}
+	return d + g.subtreeDuration[child.Edge.To] + 1*time.Millisecond
 }
 
 func (g *Generator) GenerateBatch(_ context.Context) ([]model.Span, error) {

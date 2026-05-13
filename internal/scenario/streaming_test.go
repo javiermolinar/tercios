@@ -1,9 +1,14 @@
 package scenario
 
 import (
+	"context"
 	"math/rand"
+	"reflect"
 	"testing"
 	"time"
+
+	"github.com/javiermolinar/tercios/internal/model"
+	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
 func TestEmitHeapOrdersByDueAt(t *testing.T) {
@@ -92,6 +97,208 @@ func TestEmitHeapPeekDueAt(t *testing.T) {
 	}
 	if h.Len() != 2 {
 		t.Fatalf("expected len=2 after peek (peek must not pop), got %d", h.Len())
+	}
+}
+
+type spanKey struct {
+	Name string
+	Kind oteltrace.SpanKind
+}
+
+func tallySpans(spans []model.Span) map[spanKey]int {
+	out := make(map[spanKey]int)
+	for _, s := range spans {
+		out[spanKey{Name: s.Name, Kind: s.Kind}]++
+	}
+	return out
+}
+
+func drainStreamingWalker(t *testing.T, w *StreamingWalker) []model.Span {
+	t.Helper()
+	var out []model.Span
+	for {
+		spans, _, ok := w.NextEmit()
+		if !ok {
+			return out
+		}
+		out = append(out, spans...)
+	}
+}
+
+// TestStreamingWalkerStructuralEquivalence verifies that the streaming
+// walker produces the same span count and the same multiset of
+// (name, kind) as GenerateBatch for the shared test scenario. SpanIDs and
+// timestamps are not compared because the streaming walker pops in
+// (DueAt, Seq) order rather than DFS-preorder.
+func TestStreamingWalkerStructuralEquivalence(t *testing.T) {
+	definition := testDefinition(t)
+
+	gEager := NewGenerator(definition)
+	eagerSpans, err := gEager.GenerateBatch(context.Background())
+	if err != nil {
+		t.Fatalf("eager GenerateBatch: %v", err)
+	}
+
+	gStreaming := NewGenerator(definition)
+	walker, err := gStreaming.NewStreamingWalker(time.Now())
+	if err != nil {
+		t.Fatalf("NewStreamingWalker: %v", err)
+	}
+	streamingSpans := drainStreamingWalker(t, walker)
+
+	if len(streamingSpans) != len(eagerSpans) {
+		t.Fatalf("span count differs: eager=%d streaming=%d", len(eagerSpans), len(streamingSpans))
+	}
+
+	eagerTally := tallySpans(eagerSpans)
+	streamingTally := tallySpans(streamingSpans)
+	if !reflect.DeepEqual(eagerTally, streamingTally) {
+		t.Fatalf("(name, kind) multiset differs:\n  eager:     %v\n  streaming: %v", eagerTally, streamingTally)
+	}
+}
+
+// TestStreamingWalkerParentChildStructure verifies that the trace produced
+// by the streaming walker is well-formed: exactly one root, every non-root
+// span's parent is present in the output, all SpanIDs unique, and all
+// spans share one TraceID.
+func TestStreamingWalkerParentChildStructure(t *testing.T) {
+	definition := testDefinition(t)
+	g := NewGenerator(definition)
+	walker, err := g.NewStreamingWalker(time.Now())
+	if err != nil {
+		t.Fatalf("NewStreamingWalker: %v", err)
+	}
+	spans := drainStreamingWalker(t, walker)
+	if len(spans) == 0 {
+		t.Fatalf("streaming walker produced no spans")
+	}
+
+	seen := make(map[oteltrace.SpanID]bool, len(spans))
+	var rootCount int
+	traceID := spans[0].TraceID
+	if traceID != walker.TraceID() {
+		t.Fatalf("first span TraceID %s differs from walker.TraceID() %s", traceID, walker.TraceID())
+	}
+	for i, span := range spans {
+		if seen[span.SpanID] {
+			t.Fatalf("duplicate SpanID at index %d: %s", i, span.SpanID)
+		}
+		seen[span.SpanID] = true
+		if !span.ParentSpanID.IsValid() {
+			rootCount++
+		}
+		if span.TraceID != traceID {
+			t.Fatalf("span %d TraceID mismatch: %s vs %s", i, span.TraceID, traceID)
+		}
+	}
+	if rootCount != 1 {
+		t.Fatalf("expected exactly 1 root span, got %d", rootCount)
+	}
+	for _, span := range spans {
+		if !span.ParentSpanID.IsValid() {
+			continue
+		}
+		if !seen[span.ParentSpanID] {
+			t.Fatalf("span %s has parent %s which is not in output", span.SpanID, span.ParentSpanID)
+		}
+	}
+}
+
+// TestStreamingWalkerEmitsEventsAndLinks mirrors
+// TestGeneratorEmitsEventsAndLinks but drives the streaming walker. It
+// verifies that lazy event/link resolution still emits events on the
+// expected span and produces a valid link to a previously-emitted span
+// (the root).
+func TestStreamingWalkerEmitsEventsAndLinks(t *testing.T) {
+	cfg := Config{
+		Name: "events-links",
+		Seed: 42,
+		Services: map[string]ServiceConfig{
+			"svc": {Resource: map[string]TypedValue{"service.name": {Type: ValueTypeString, Value: "svc"}}},
+		},
+		Nodes: map[string]NodeConfig{
+			"a": {Service: "svc", SpanName: "A"},
+			"b": {Service: "svc", SpanName: "B"},
+		},
+		Root: "a",
+		Edges: []EdgeConfig{
+			{
+				From: "a", To: "b", Kind: EdgeKindInternal, Repeat: 1, DurationMs: 10,
+				SpanEvents: []EventConfig{
+					{Name: "cache.miss", Attributes: map[string]TypedValue{
+						"cache.key": {Type: ValueTypeString, Value: "items:list"},
+					}},
+				},
+				SpanLinks: []LinkConfig{
+					{Node: "a", Attributes: map[string]TypedValue{
+						"link.type": {Type: ValueTypeString, Value: "follows_from"},
+					}},
+				},
+			},
+		},
+	}
+	definition, err := cfg.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	g := NewGenerator(definition)
+	walker, err := g.NewStreamingWalker(time.Now())
+	if err != nil {
+		t.Fatalf("NewStreamingWalker: %v", err)
+	}
+	spans := drainStreamingWalker(t, walker)
+
+	var foundEvent, foundLink bool
+	for _, span := range spans {
+		for _, event := range span.Events {
+			if event.Name == "cache.miss" {
+				foundEvent = true
+				if len(event.Attributes) == 0 {
+					t.Fatalf("cache.miss event missing attributes")
+				}
+			}
+		}
+		for _, link := range span.Links {
+			if link.SpanContext.IsValid() {
+				foundLink = true
+				if len(link.Attributes) == 0 {
+					t.Fatalf("link missing attributes")
+				}
+			}
+		}
+	}
+	if !foundEvent {
+		t.Fatalf("expected cache.miss event")
+	}
+	if !foundLink {
+		t.Fatalf("expected at least one span with a valid link")
+	}
+}
+
+// TestStreamingWalkerDoneFlag verifies Done() transitions to true after
+// the heap drains and stays consistent with NextEmit returning ok=false.
+func TestStreamingWalkerDoneFlag(t *testing.T) {
+	definition := testDefinition(t)
+	g := NewGenerator(definition)
+	walker, err := g.NewStreamingWalker(time.Now())
+	if err != nil {
+		t.Fatalf("NewStreamingWalker: %v", err)
+	}
+	if walker.Done() {
+		t.Fatalf("walker should not be done before any emits")
+	}
+	for {
+		_, _, ok := walker.NextEmit()
+		if !ok {
+			break
+		}
+	}
+	if !walker.Done() {
+		t.Fatalf("walker should be done after NextEmit returns ok=false")
+	}
+	// Calling NextEmit again must remain safe and still return ok=false.
+	if _, _, ok := walker.NextEmit(); ok {
+		t.Fatalf("NextEmit after drain returned ok=true")
 	}
 }
 

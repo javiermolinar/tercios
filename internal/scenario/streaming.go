@@ -2,6 +2,7 @@ package scenario
 
 import (
 	"container/heap"
+	"fmt"
 	"time"
 
 	"github.com/javiermolinar/tercios/internal/model"
@@ -9,19 +10,29 @@ import (
 )
 
 // pendingEmit is one entry in the streaming exporter's scheduling heap.
-// It carries enough state to materialize the spans for a single ChildSpec
-// traversal at DueAt, attach them under ParentSpanID, and push the
-// traversal's own children onto the heap.
 //
-// The fields mirror the iterative walker's walkFrame plus a DueAt key and
-// a Seq tiebreaker so that emits with identical DueAt pop in deterministic
-// insertion order. Events and Links are resolved lazily on first pop (when
-// the per-trace nodeSpans reflects every preceding span of that trace) so
-// link semantics match the eager walker.
+// DueAt semantics: DueAt is the wall-clock moment at which the emit should
+// fire = the end_time of the span(s) it produces. Waiting until
+// time.Now() >= DueAt guarantees that the emitted span's end_time is in
+// the past (or now), which is required by Tempo and most OTel-compatible
+// backends. The span's start_time is then DueAt - edge.Duration.
+//
+// When IsRoot is true the emit is a sentinel for the trace's root span:
+// Child, ParentSpanID, RemainingRepeats, Events, and Links are unused.
+// The root SpanID is pre-allocated at NewStreamingWalker time and stored
+// in trace.NodeSpans so that links from descendant spans can resolve to
+// it even though the root itself is materialized last.
+//
+// Seq is assigned by emitHeap.PushEmit and breaks ties between emits with
+// identical DueAt; the heap's Less function applies an additional rule
+// that non-root emits sort before root emits at the same DueAt so that
+// the root always fires after every sibling/descendant whose end_time
+// coincides with the scenario's nominal end.
 type pendingEmit struct {
 	DueAt            time.Time
 	Seq              uint64
 	Trace            *traceState
+	IsRoot           bool
 	Child            ChildSpec
 	ParentSpanID     oteltrace.SpanID
 	RemainingRepeats int
@@ -71,6 +82,12 @@ func (h *emitHeap) Less(i, j int) bool {
 	if !a.DueAt.Equal(b.DueAt) {
 		return a.DueAt.Before(b.DueAt)
 	}
+	// At equal DueAt, non-root emits pop first so the trace's root span is
+	// emitted last (its end_time coincides with the last descendant's
+	// end_time by construction).
+	if a.IsRoot != b.IsRoot {
+		return !a.IsRoot
+	}
 	return a.Seq < b.Seq
 }
 
@@ -112,4 +129,200 @@ func (h *emitHeap) PeekDueAt() (time.Time, bool) {
 		return time.Time{}, false
 	}
 	return h.items[0].DueAt, true
+}
+
+// StreamingWalker walks one trace's DAG via emitHeap, yielding span batches
+// at the wall-clock moments their spans should end. It is the single-trace
+// primitive the streaming exporter composes: a future scheduler runs many
+// walkers concurrently against a shared heap, waits on PeekDueAt, and
+// forwards each NextEmit batch to OTLP.
+//
+// DueAt scheme:
+//
+//   - Every heap entry's DueAt equals the end_time of the span(s) it will
+//     emit. The scheduler waits until time.Now() >= DueAt before popping,
+//     which keeps emitted timestamps in the past (acceptable to Tempo).
+//   - First repeat of a child of node N is scheduled at
+//     parent.CursorAfter + child.Edge.Duration.
+//   - Subsequent siblings are staggered by Generator.stepDuration(prev) *
+//     prev.Edge.Repeat so each sibling fires only after its left siblings'
+//     full subtree work (including all their repeats) completes.
+//   - Self-back for the next repeat is scheduled at
+//     emit.DueAt + Generator.stepDuration(emit.Child) so it fires after
+//     the current repeat's subtree drains.
+//   - The trace's root span is pushed as an IsRoot sentinel with DueAt =
+//     startedAt + estimateDuration(root). By construction this is the
+//     largest DueAt in the trace, so root fires last; the IsRoot field
+//     also breaks ties in emitHeap.Less in case a descendant's end_time
+//     coincides with the scenario's nominal end.
+type StreamingWalker struct {
+	g     *Generator
+	trace *traceState
+	heap  *emitHeap
+}
+
+// NewStreamingWalker constructs a walker for one trace whose root span is
+// nominally placed at startedAt. The walker consumes one sequence number
+// from g.counter so that successive walkers from the same generator emit
+// distinct traces (same as GenerateBatch).
+//
+// Construction allocates the root SpanID immediately and records it in
+// trace.NodeSpans so that descendant spans linking to the root resolve
+// correctly even though the root span itself is materialized only when
+// its heap sentinel pops (last).
+func (g *Generator) NewStreamingWalker(startedAt time.Time) (*StreamingWalker, error) {
+	if g == nil {
+		return nil, fmt.Errorf("scenario generator not configured")
+	}
+	if _, ok := g.definition.Nodes[g.definition.Root]; !ok {
+		return nil, fmt.Errorf("root node %q not found", g.definition.Root)
+	}
+
+	sequence := g.counter.Add(1)
+	trace := &traceState{
+		TraceID:   traceIDFromSeed(g.definition.Seed, sequence),
+		StartedAt: startedAt,
+		NodeSpans: make(map[string]oteltrace.SpanID),
+		IDState:   newSpanIDState(g.definition.Seed, sequence),
+	}
+
+	estimated := estimateDuration(g.definition.Root, g.outgoing)
+	if estimated <= 0 {
+		estimated = 100 * time.Millisecond
+	}
+	rootSpanID := trace.IDState.next()
+	trace.NodeSpans[g.definition.Root] = rootSpanID
+
+	w := &StreamingWalker{
+		g:     g,
+		trace: trace,
+		heap:  &emitHeap{},
+	}
+
+	// Push root's children with staggered DueAts so each sibling fires
+	// only after every earlier sibling's full subtree (including repeats)
+	// has drained, mirroring the eager walker's sequential cursor.
+	base := startedAt.Add(1 * time.Millisecond) // first child's logical start_time
+	for _, child := range g.NextChildren(g.definition.Root) {
+		d := child.Edge.Duration
+		if d <= 0 {
+			d = 1 * time.Millisecond
+		}
+		w.heap.PushEmit(&pendingEmit{
+			DueAt:            base.Add(d), // end_time of this child's first repeat
+			Trace:            trace,
+			Child:            child,
+			ParentSpanID:     rootSpanID,
+			RemainingRepeats: child.Edge.Repeat,
+		})
+		trace.InFlight++
+		base = base.Add(time.Duration(child.Edge.Repeat) * g.stepDuration(child))
+	}
+
+	// Push the root sentinel last. Its DueAt equals the scenario's nominal
+	// end. Ties with the last descendant are broken by the IsRoot rule in
+	// emitHeap.Less so root still fires after the descendant.
+	w.heap.PushEmit(&pendingEmit{
+		DueAt:  startedAt.Add(estimated),
+		Trace:  trace,
+		IsRoot: true,
+	})
+	trace.InFlight++
+	return w, nil
+}
+
+// TraceID returns the deterministic TraceID assigned to this walker's
+// trace at construction time.
+func (w *StreamingWalker) TraceID() oteltrace.TraceID { return w.trace.TraceID }
+
+// Done reports whether the walker has no more spans to emit.
+func (w *StreamingWalker) Done() bool { return w.heap.Len() == 0 }
+
+// NextDueAt returns the DueAt of the next emit without popping. ok is
+// false when the walker is Done(). The scheduler uses this to decide
+// how long to wait before the next NextEmit call.
+func (w *StreamingWalker) NextDueAt() (time.Time, bool) {
+	return w.heap.PeekDueAt()
+}
+
+// NextEmit pops the next emit from the heap, materializes its spans, and
+// pushes that emit's children plus a self-repeat (if any). Returns ok=false
+// once the heap is drained. Calling NextEmit after that is safe and
+// continues to return ok=false.
+//
+// The caller is responsible for waiting until time.Now() >= dueAt before
+// invoking NextEmit if wall-clock pacing is desired (see RunSingleTrace).
+func (w *StreamingWalker) NextEmit() (spans []model.Span, dueAt time.Time, ok bool) {
+	if w.heap.Len() == 0 {
+		return nil, time.Time{}, false
+	}
+
+	emit := w.heap.PopMin()
+
+	if emit.IsRoot {
+		spans = w.materializeRoot(emit)
+		w.trace.InFlight--
+		return spans, emit.DueAt, true
+	}
+
+	// Resolve events/links lazily on first pop so the nodeSpans snapshot
+	// reflects every span emitted earlier in the trace, matching the eager
+	// walker's resolution timing.
+	if !emit.Resolved {
+		emit.Events = resolveEvents(emit.Child.Edge.SpanEvents)
+		emit.Links = resolveLinks(w.trace.TraceID, emit.Child.Edge.SpanLinks, w.trace.NodeSpans)
+		emit.Resolved = true
+	}
+
+	d := emit.Child.Edge.Duration
+	if d <= 0 {
+		d = 1 * time.Millisecond
+	}
+	start := emit.DueAt.Add(-d)
+	result := w.g.materializeChild(emit.Child, w.trace.TraceID, emit.ParentSpanID, start, w.trace.IDState, emit.Events, emit.Links)
+	w.trace.NodeSpans[emit.Child.Edge.To] = result.TargetSpanID
+
+	// Push children of the just-emitted target, staggering siblings by the
+	// cumulative subtree work of their predecessors so sequential cursor
+	// semantics from the eager walker are preserved.
+	childBase := result.CursorAfter // == emit.DueAt + 1ms, i.e. first child's logical start_time
+	for _, child := range w.g.NextChildren(emit.Child.Edge.To) {
+		cd := child.Edge.Duration
+		if cd <= 0 {
+			cd = 1 * time.Millisecond
+		}
+		w.heap.PushEmit(&pendingEmit{
+			DueAt:            childBase.Add(cd),
+			Trace:            w.trace,
+			Child:            child,
+			ParentSpanID:     result.TargetSpanID,
+			RemainingRepeats: child.Edge.Repeat,
+		})
+		w.trace.InFlight++
+		childBase = childBase.Add(time.Duration(child.Edge.Repeat) * w.g.stepDuration(child))
+	}
+
+	emit.RemainingRepeats--
+	if emit.RemainingRepeats > 0 {
+		emit.DueAt = emit.DueAt.Add(w.g.stepDuration(emit.Child))
+		// Resolved stays true: events/links are reused across repeats so
+		// resolution timing matches the eager walker's once-per-edge rule.
+		w.heap.PushEmit(emit)
+	} else {
+		w.trace.InFlight--
+	}
+
+	return result.Spans, emit.DueAt, true
+}
+
+// materializeRoot constructs the root span using the SpanID pre-allocated
+// at NewStreamingWalker time. Its duration equals emit.DueAt - startedAt,
+// which by construction equals estimateDuration(root) and matches the
+// duration the eager walker would assign.
+func (w *StreamingWalker) materializeRoot(emit *pendingEmit) []model.Span {
+	rootNode := w.g.definition.Nodes[w.g.definition.Root]
+	rootSpanID := w.trace.NodeSpans[w.g.definition.Root]
+	duration := emit.DueAt.Sub(w.trace.StartedAt)
+	rootSpan := w.g.newSpan(w.trace.TraceID, rootSpanID, oteltrace.SpanID{}, rootNode, oteltrace.SpanKindInternal, w.trace.StartedAt, duration, nil, nil, nil)
+	return []model.Span{rootSpan}
 }
