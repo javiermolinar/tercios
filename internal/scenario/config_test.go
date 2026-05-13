@@ -377,6 +377,134 @@ func TestDecodeJSONRejectsUnknownNodeService(t *testing.T) {
 	}
 }
 
+func TestDecodeJSONRejectsRootWithIncomingEdges(t *testing.T) {
+	// gateway is declared as root, but the api -> gateway edge gives it
+	// an incoming edge. The walker would silently ignore that edge and
+	// api would become orphaned. validateDAG must reject.
+	input := `{
+  "name": "root-with-incoming",
+  "services": { "s": { "resource": { "service.name": { "type": "string", "value": "s" } } } },
+  "nodes": {
+    "gateway": { "service": "s", "span_name": "G" },
+    "api":     { "service": "s", "span_name": "A" }
+  },
+  "root": "gateway",
+  "edges": [
+    { "from": "gateway", "to": "api", "kind": "internal", "repeat": 1, "duration_ms": 10 },
+    { "from": "api", "to": "gateway", "kind": "internal", "repeat": 1, "duration_ms": 10 }
+  ]
+}`
+
+	_, err := DecodeJSON(strings.NewReader(input))
+	if err == nil {
+		t.Fatalf("expected error for root with incoming edge, got nil")
+	}
+	if !strings.Contains(err.Error(), "must have no incoming edges") {
+		t.Fatalf("expected error mentioning incoming edges, got %v", err)
+	}
+}
+
+func TestDecodeJSONRejectsUnreachableNodes(t *testing.T) {
+	// 'orphan' is defined but never referenced as an edge target from root.
+	// The walker never visits it, producing a smaller trace than the user
+	// expects. validateDAG must reject and name the unreachable nodes so
+	// the user can fix the typo.
+	input := `{
+  "name": "with-orphan",
+  "services": { "s": { "resource": { "service.name": { "type": "string", "value": "s" } } } },
+  "nodes": {
+    "root":   { "service": "s", "span_name": "R" },
+    "child":  { "service": "s", "span_name": "C" },
+    "orphan": { "service": "s", "span_name": "O" }
+  },
+  "root": "root",
+  "edges": [
+    { "from": "root", "to": "child", "kind": "internal", "repeat": 1, "duration_ms": 10 }
+  ]
+}`
+
+	_, err := DecodeJSON(strings.NewReader(input))
+	if err == nil {
+		t.Fatalf("expected error for unreachable node, got nil")
+	}
+	if !strings.Contains(err.Error(), "not reachable from root") {
+		t.Fatalf("expected error mentioning unreachable nodes, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "orphan") {
+		t.Fatalf("expected error naming the orphan node, got %v", err)
+	}
+}
+
+func TestDecodeJSONRejectsUnreachableSubgraph(t *testing.T) {
+	// Two unrelated nodes 'x' and 'y' connected to each other but not to
+	// root. validateDAG must report BOTH as unreachable, sorted.
+	input := `{
+  "name": "split-graph",
+  "services": { "s": { "resource": { "service.name": { "type": "string", "value": "s" } } } },
+  "nodes": {
+    "root": { "service": "s", "span_name": "R" },
+    "a":    { "service": "s", "span_name": "A" },
+    "x":    { "service": "s", "span_name": "X" },
+    "y":    { "service": "s", "span_name": "Y" }
+  },
+  "root": "root",
+  "edges": [
+    { "from": "root", "to": "a", "kind": "internal", "repeat": 1, "duration_ms": 10 },
+    { "from": "x", "to": "y", "kind": "internal", "repeat": 1, "duration_ms": 10 }
+  ]
+}`
+
+	_, err := DecodeJSON(strings.NewReader(input))
+	if err == nil {
+		t.Fatalf("expected error for unreachable subgraph, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "x") || !strings.Contains(msg, "y") {
+		t.Fatalf("expected error naming both unreachable nodes x and y, got %v", err)
+	}
+	// Orphans should be sorted for stable output.
+	xIdx := strings.Index(msg, "x")
+	yIdx := strings.Index(msg, "y")
+	if xIdx == -1 || yIdx == -1 || xIdx > yIdx {
+		t.Fatalf("expected x to precede y in orphans list, got %v", err)
+	}
+}
+
+func TestDecodeJSONLatencyErrorIncludesSubtreeContext(t *testing.T) {
+	// When the latency check fails, the error message must explain the
+	// consequence in terms the user can act on: effective duration,
+	// subtree under the target, and resulting server interval.
+	input := `{
+  "name": "latency-error-context",
+  "services": { "s": { "resource": { "service.name": { "type": "string", "value": "s" } } } },
+  "nodes": {
+    "a": { "service": "s", "span_name": "A" },
+    "b": { "service": "s", "span_name": "B" },
+    "c": { "service": "s", "span_name": "C" }
+  },
+  "root": "a",
+  "edges": [
+    { "from": "a", "to": "b", "kind": "client_server", "repeat": 1, "duration_ms": 10, "network_latency_ms": 5 },
+    { "from": "b", "to": "c", "kind": "internal", "repeat": 1, "duration_ms": 5 }
+  ]
+}`
+
+	_, err := DecodeJSON(strings.NewReader(input))
+	if err == nil {
+		t.Fatalf("expected timing validation error, got nil")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"effective span duration",
+		"server interval",
+		`subtree("b")`,
+	} {
+		if !strings.Contains(msg, want) {
+			t.Fatalf("expected error to contain %q, got %v", want, err)
+		}
+	}
+}
+
 func TestDecodeJSONNetworkLatencyValidation(t *testing.T) {
 	base := func(kind, extra string) string {
 		return `{
@@ -430,13 +558,13 @@ func TestDecodeJSONNetworkLatencyValidation(t *testing.T) {
 			name:    "latency too large rejected",
 			input:   base("client_server", `, "network_latency_ms": 5`),
 			wantErr: true,
-			wantMsg: "must be < duration_ms",
+			wantMsg: "duration_ms > 2*network_latency_ms",
 		},
 		{
 			name:    "latency exactly half duration rejected (boundary)",
 			input:   base("client_server", `, "network_latency_ms": 5`),
 			wantErr: true,
-			wantMsg: "must be < duration_ms",
+			wantMsg: "duration_ms > 2*network_latency_ms",
 		},
 		{
 			name:    "latency on producer_consumer accepted",

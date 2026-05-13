@@ -167,12 +167,8 @@ func TestGeneratorEmitsEventsAndLinks(t *testing.T) {
 	}
 }
 
-// TestGeneratorParentContainsChild asserts that every emitted span's
-// [StartTime, EndTime] interval is fully contained within its parent's
-// interval, matching real OTel SDK semantics. This is the property that
-// made the iterative-walker rewrite worthwhile: a backend rendering this
-// trace will draw children temporally inside their parents instead of
-// after them.
+// TestGeneratorParentContainsChild: every span's [Start, End] is
+// contained in its parent's, matching real OTel semantics.
 func TestGeneratorParentContainsChild(t *testing.T) {
 	definition := testDefinition(t)
 	g := NewGenerator(definition)
@@ -203,11 +199,8 @@ func TestGeneratorParentContainsChild(t *testing.T) {
 	}
 }
 
-// TestGeneratorRootCoversWholeTrace asserts that the root span spans the
-// entire trace timeline: its StartTime is the earliest StartTime in the
-// trace and its EndTime is the latest EndTime. Real traces show the root
-// as the outermost bar in any timeline view; we must not produce a trace
-// where some descendant outlasts the root.
+// TestGeneratorRootCoversWholeTrace: root's [Start, End] contains every
+// other span. The root is the outermost bar in a timeline view.
 func TestGeneratorRootCoversWholeTrace(t *testing.T) {
 	definition := testDefinition(t)
 	g := NewGenerator(definition)
@@ -237,15 +230,9 @@ func TestGeneratorRootCoversWholeTrace(t *testing.T) {
 	}
 }
 
-// TestGeneratorSiblingsDoNotOverlap asserts that two spans sharing the
-// same parent occupy disjoint intervals (sequential sibling semantics).
-// Without this, a service appearing twice as a sibling under the same
-// parent would look like a single overlapping pair of concurrent calls,
-// which the model deliberately does not produce.
-//
-// Pair edges (ClientServer, ProducerConsumer, ClientDatabase) produce a
-// source span and a target span sharing start/end — the target is parented
-// at the source, so they don't count as siblings for this test.
+// TestGeneratorSiblingsDoNotOverlap: siblings under the same parent are
+// disjoint in time (sequential semantics). Pair-edge source/target spans
+// aren't siblings (target's parent is source).
 func TestGeneratorSiblingsDoNotOverlap(t *testing.T) {
 	definition := testDefinition(t)
 	g := NewGenerator(definition)
@@ -278,15 +265,9 @@ func TestGeneratorSiblingsDoNotOverlap(t *testing.T) {
 	}
 }
 
-// TestGeneratorChildStartsAfterParentStart asserts that every non-root
-// span begins strictly after its parent's StartTime. Without this, a
-// child appearing at exactly the same instant as its parent would be
-// indistinguishable from the parent in trace timestamp ordering, which
-// some backends use for sorting.
-//
-// Pair edges intentionally produce two spans sharing start/end (the
-// target is parented at the source); those are excluded since the
-// equality is by design.
+// TestGeneratorChildStartsAfterParentStart: child.Start > parent.Start
+// strictly. Pair-edge source/target spans that share start/end by design
+// are excluded.
 func TestGeneratorChildStartsAfterParentStart(t *testing.T) {
 	definition := testDefinition(t)
 	g := NewGenerator(definition)
@@ -318,12 +299,7 @@ func TestGeneratorChildStartsAfterParentStart(t *testing.T) {
 	}
 }
 
-// TestPairEdgeNetworkLatencyInsetsTargetSpan verifies that a pair edge
-// with NetworkLatency > 0 produces a target-side span whose interval is
-// inset by latency on both sides of the source-side span's interval.
-// This is the realistic shape backends expect: the server records
-// receipt and response after request travel and before response travel,
-// so its interval is strictly inside the client's.
+// TestPairEdgeNetworkLatencyInsetsTargetSpan: target span = [client.start+lat, client.end-lat].
 func TestPairEdgeNetworkLatencyInsetsTargetSpan(t *testing.T) {
 	cfg := Config{
 		Name: "latency-inset",
@@ -387,10 +363,8 @@ func TestPairEdgeNetworkLatencyInsetsTargetSpan(t *testing.T) {
 	}
 }
 
-// TestPairEdgeZeroLatencyPreservesSharedInterval verifies that the
-// default (NetworkLatencyMs == 0) keeps the pre-existing behavior where
-// both spans of a pair share start_time and end_time. This guards
-// against accidental regressions for scenarios that don't opt in.
+// TestPairEdgeZeroLatencyPreservesSharedInterval: latency=0 ⇒ target
+// and source share intervals (regression guard for existing scenarios).
 func TestPairEdgeZeroLatencyPreservesSharedInterval(t *testing.T) {
 	definition := testDefinition(t)
 	g := NewGenerator(definition)
@@ -429,10 +403,8 @@ func TestPairEdgeZeroLatencyPreservesSharedInterval(t *testing.T) {
 	}
 }
 
-// TestPairEdgeLatencyChildrenFitInsideTarget verifies the
-// subtree-positioning invariant: when a pair edge with latency has a
-// subtree under its target node, the children attach to the (narrower)
-// target span and fit strictly inside its interval, not the client's.
+// TestPairEdgeLatencyChildrenFitInsideTarget: with latency, descendants
+// still fit inside the (narrower) target span at every depth.
 func TestPairEdgeLatencyChildrenFitInsideTarget(t *testing.T) {
 	cfg := Config{
 		Name: "latency-subtree",

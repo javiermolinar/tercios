@@ -73,11 +73,8 @@ func NewGenerator(definition Definition) *Generator {
 	}
 }
 
-// computeSubtreeDurations walks the DAG once from rootID and returns the
-// total scenario-time consumed by every visited node's outgoing subtree.
-// The formula matches estimateDuration's so a node's effective span
-// duration (edge.Duration + subtreeDuration[edge.To]) is consistent with
-// the scenario timeline.
+// computeSubtreeDurations returns, per node, the total scenario-time
+// consumed by its outgoing subtree. Same recurrence as estimateDuration.
 func computeSubtreeDurations(rootID string, outgoing map[string][]Edge) map[string]time.Duration {
 	out := make(map[string]time.Duration, len(outgoing))
 	var walk func(id string) time.Duration
@@ -161,19 +158,11 @@ func (s *spanIDState) next() oteltrace.SpanID {
 	return id
 }
 
-// walkFrame is one pending child-edge expansion in the iterative walker.
-// Events and Links are resolved on first pop (when nodeSpans reflects every
-// span emitted by preceding siblings' subtrees) and cached across repeats
-// so that resolution semantics match the original recursive walker.
-//
-// A frame with Restore != zero is a cursor-restore sentinel rather than a
-// real edge to materialize: when popped, the walker sets *cursor = Restore
-// and continues. Sentinels are pushed immediately after a parent edge is
-// materialized so the cursor reverts to the parent's CursorAfter (= the
-// next-sibling timestamp) once the parent's subtree drains. This is what
-// gives parent spans temporal containment over their children: children
-// pop at parent.ChildrenStart, the sentinel restores cursor for the
-// parent's next sibling or repeat.
+// walkFrame is one pending child-edge expansion. Events/Links are
+// resolved lazily on first pop and cached across repeats. A frame with
+// Restore != zero is a cursor-restore sentinel: on pop the walker sets
+// *cursor = Restore (no materialization) so siblings of a just-drained
+// parent start at parent.CursorAfter instead of mid-subtree.
 type walkFrame struct {
 	Child            ChildSpec
 	ParentSpanID     oteltrace.SpanID
@@ -184,16 +173,9 @@ type walkFrame struct {
 	Restore          time.Time
 }
 
-// emitFromNode walks every descendant of nodeID iteratively, using a LIFO
-// stack to reproduce the depth-first pre-order traversal that the previous
-// recursive implementation produced. Output is byte-identical for any
-// scenario: span order, ID allocation order, cursor accumulation, and
-// link/event resolution timing are all preserved.
-//
-// The stack is also the seam the streaming/long-running exporter will reuse:
-// swap this LIFO for a min-heap keyed on emit-time and the rest of the
-// machinery (materializeChild, nodeSpans, the Resolved-once invariant) is
-// unchanged.
+// emitFromNode walks nodeID's descendants iteratively via a LIFO stack,
+// preserving the original recursive DFS pre-order. Swapping the stack
+// for a min-heap on emit-time is the seam the streaming exporter reuses.
 func (g *Generator) emitFromNode(
 	spans []model.Span,
 	traceID oteltrace.TraceID,
@@ -277,34 +259,15 @@ func (g *Generator) emitFromNode(
 	return spans
 }
 
-// materializedChild is the result of expanding a single ChildSpec traversal
-// into concrete spans. It carries no caller state: the eager emitFromNode
-// loop and (later) the streaming exporter both consume the same value.
-//
-// The two cursor outputs encode parent-contains-child timing:
-//
-//   - ChildrenStart is where the first child of this traversal's target
-//     must begin (= the span's start + 1ms), so children fall INSIDE the
-//     parent's [start, end] interval.
-//   - CursorAfter is where the parent's next sibling or next repeat at
-//     the same level must begin (= the span's end + 1ms, where end
-//     already covers the parent's full subtree work via effective duration).
+// materializedChild is the result of expanding one ChildSpec traversal.
+// ChildrenStart (= span.start + 1ms) positions children inside the
+// parent; CursorAfter (= span.end + 1ms) positions the next sibling at
+// the same level.
 type materializedChild struct {
-	// Spans are the 1 or 2 spans produced for this traversal, in the order
-	// they should appear in the exported batch.
-	Spans []model.Span
-	// TargetSpanID is the span ID that subsequent children of edge.To must
-	// attach to, and is the value to record into nodeSpans[edge.To] for
-	// later link resolution.
-	TargetSpanID oteltrace.SpanID
-	// ChildrenStart is the timestamp at which the first child of
-	// edge.To should begin its span; equal to the produced span's
-	// StartTime + 1ms.
+	Spans         []model.Span
+	TargetSpanID  oteltrace.SpanID // value to record in nodeSpans[edge.To]
 	ChildrenStart time.Time
-	// CursorAfter is the timestamp the caller should advance the cursor
-	// to before materializing the next sibling or repeat of THIS edge;
-	// equal to the produced span's EndTime + 1ms.
-	CursorAfter time.Time
+	CursorAfter   time.Time
 }
 
 // materializeChild produces the spans for one traversal of child without
@@ -326,10 +289,8 @@ func (g *Generator) materializeChild(
 		duration = 1 * time.Millisecond
 	}
 
-	// effDur = own edge duration + full subtree work of edge.To, so the
-	// produced span(s) end_time covers every descendant span's end_time.
-	// This is what makes the trace's parent spans temporally contain
-	// their children (matching real OTel SDK semantics).
+	// effDur covers own duration + subtree so the span temporally
+	// contains its descendants.
 	effDur := duration + g.subtreeDuration[edge.To]
 
 	switch edge.Kind {
@@ -355,19 +316,11 @@ func (g *Generator) materializeChild(
 	return materializedChild{TargetSpanID: parentSpanID, ChildrenStart: start, CursorAfter: start}
 }
 
-// materializePair emits the two-span pattern shared by ClientServer,
-// ProducerConsumer, and ClientDatabase edges: a source-kind span parented
-// at parentSpanID followed by a target-kind span parented at the source
-// span. Events and links are attached to the first span only, matching
-// the eager path's historical behavior.
-//
-// When edge.NetworkLatency > 0 the target-side (server/consumer/database)
-// span is inset by NetworkLatency on both sides of the source-side
-// (client/producer) span's interval. Children of the target attach to
-// the target span, so they fire inside the (narrower) target interval
-// rather than the full source interval. Config.Validate enforces
-// 2*NetworkLatency < Duration so the inset never produces an empty or
-// negative target interval.
+// materializePair emits the source/target two-span pattern for non-Internal
+// edges. Events and links go on the source span only. With
+// edge.NetworkLatency > 0, the target span is inset by NetworkLatency on
+// both sides of the source span's interval; children attach to the
+// (narrower) target.
 func (g *Generator) materializePair(
 	child ChildSpec,
 	traceID oteltrace.TraceID,
