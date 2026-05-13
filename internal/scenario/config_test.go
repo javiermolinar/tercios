@@ -376,3 +376,93 @@ func TestDecodeJSONRejectsUnknownNodeService(t *testing.T) {
 		t.Fatalf("expected error for unknown node service, got nil")
 	}
 }
+
+func TestDecodeJSONNetworkLatencyValidation(t *testing.T) {
+	base := func(kind, extra string) string {
+		return `{
+  "name": "latency-test",
+  "services": { "s": { "resource": { "service.name": { "type": "string", "value": "s" } } } },
+  "nodes": {
+    "a": { "service": "s", "span_name": "A" },
+    "b": { "service": "s", "span_name": "B" }
+  },
+  "root": "a",
+  "edges": [
+    { "from": "a", "to": "b", "kind": "` + kind + `", "repeat": 1, "duration_ms": 10` + extra + ` }
+  ]
+}`
+	}
+
+	tests := []struct {
+		name    string
+		input   string
+		wantErr bool
+		wantMsg string
+	}{
+		{
+			name:    "valid pair edge with small latency",
+			input:   base("client_server", `, "network_latency_ms": 2`),
+			wantErr: false,
+		},
+		{
+			name:    "zero latency on pair edge is fine",
+			input:   base("client_server", `, "network_latency_ms": 0`),
+			wantErr: false,
+		},
+		{
+			name:    "latency unset on pair edge is fine",
+			input:   base("client_server", ``),
+			wantErr: false,
+		},
+		{
+			name:    "negative latency rejected",
+			input:   base("client_server", `, "network_latency_ms": -1`),
+			wantErr: true,
+			wantMsg: "network_latency_ms must be >= 0",
+		},
+		{
+			name:    "latency on internal edge rejected",
+			input:   base("internal", `, "network_latency_ms": 1`),
+			wantErr: true,
+			wantMsg: "network_latency_ms is not supported on internal edges",
+		},
+		{
+			name:    "latency too large rejected",
+			input:   base("client_server", `, "network_latency_ms": 5`),
+			wantErr: true,
+			wantMsg: "must be < duration_ms",
+		},
+		{
+			name:    "latency exactly half duration rejected (boundary)",
+			input:   base("client_server", `, "network_latency_ms": 5`),
+			wantErr: true,
+			wantMsg: "must be < duration_ms",
+		},
+		{
+			name:    "latency on producer_consumer accepted",
+			input:   base("producer_consumer", `, "network_latency_ms": 3`),
+			wantErr: false,
+		},
+		{
+			name:    "latency on client_database accepted",
+			input:   base("client_database", `, "network_latency_ms": 2`),
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := DecodeJSON(strings.NewReader(tt.input))
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if tt.wantMsg != "" && !strings.Contains(err.Error(), tt.wantMsg) {
+					t.Fatalf("expected error containing %q, got %v", tt.wantMsg, err)
+				}
+			} else if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}

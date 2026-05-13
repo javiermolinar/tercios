@@ -360,6 +360,14 @@ func (g *Generator) materializeChild(
 // at parentSpanID followed by a target-kind span parented at the source
 // span. Events and links are attached to the first span only, matching
 // the eager path's historical behavior.
+//
+// When edge.NetworkLatency > 0 the target-side (server/consumer/database)
+// span is inset by NetworkLatency on both sides of the source-side
+// (client/producer) span's interval. Children of the target attach to
+// the target span, so they fire inside the (narrower) target interval
+// rather than the full source interval. Config.Validate enforces
+// 2*NetworkLatency < Duration so the inset never produces an empty or
+// negative target interval.
 func (g *Generator) materializePair(
 	child ChildSpec,
 	traceID oteltrace.TraceID,
@@ -378,14 +386,16 @@ func (g *Generator) materializePair(
 	firstSpan := g.newSpan(traceID, firstID, parentSpanID, child.SourceNode, firstKind, start, effDur, edge.SpanAttributes, events, links)
 	firstSpan.Name = edgeSpanName(child.SourceNode, child.TargetNode)
 
+	secondStart := start.Add(edge.NetworkLatency)
+	secondDur := effDur - 2*edge.NetworkLatency
 	secondID := idState.next()
-	secondSpan := g.newSpan(traceID, secondID, firstID, child.TargetNode, secondKind, start, effDur, edge.SpanAttributes, nil, nil)
+	secondSpan := g.newSpan(traceID, secondID, firstID, child.TargetNode, secondKind, secondStart, secondDur, edge.SpanAttributes, nil, nil)
 
 	return materializedChild{
 		Spans:         []model.Span{firstSpan, secondSpan},
 		TargetSpanID:  secondID,
 		ChildrenStart: secondSpan.StartTime.Add(1 * time.Millisecond),
-		CursorAfter:   secondSpan.EndTime.Add(1 * time.Millisecond),
+		CursorAfter:   firstSpan.EndTime.Add(1 * time.Millisecond),
 	}
 }
 

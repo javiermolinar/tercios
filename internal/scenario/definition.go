@@ -34,6 +34,7 @@ type Edge struct {
 	Kind           EdgeKind
 	Repeat         int
 	Duration       time.Duration
+	NetworkLatency time.Duration
 	SpanAttributes map[string]attribute.Value
 	SpanEvents     []EventDef
 	SpanLinks      []LinkDef
@@ -93,6 +94,7 @@ func (c Config) Build() (Definition, error) {
 			Kind:           edge.Kind,
 			Repeat:         edge.Repeat,
 			Duration:       time.Duration(edge.DurationMs) * time.Millisecond,
+			NetworkLatency: time.Duration(edge.NetworkLatencyMs) * time.Millisecond,
 			SpanAttributes: spanAttrs,
 			SpanEvents:     events,
 			SpanLinks:      links,

@@ -53,6 +53,7 @@
       "kind": "client_server",
       "repeat": 1,
       "duration_ms": 45,
+      "network_latency_ms": 1,
       "span_attributes": {
         "http.method": {"type": "string", "value": "GET"},
         "http.route": {"type": "string", "value": "/items"},
@@ -76,6 +77,7 @@
       "kind": "client_database",
       "repeat": 2,
       "duration_ms": 25,
+      "network_latency_ms": 2,
       "span_attributes": {
         "db.system": {"type": "string", "value": "postgresql"},
         "db.name": {"type": "string", "value": "items"}
@@ -87,6 +89,7 @@
       "kind": "producer_consumer",
       "repeat": 2,
       "duration_ms": 8,
+      "network_latency_ms": 1,
       "span_attributes": {
         "messaging.system": {"type": "string", "value": "kafka"},
         "messaging.destination.name": {"type": "string", "value": "item.updated"},
@@ -99,6 +102,7 @@
       "kind": "client_database",
       "repeat": 1,
       "duration_ms": 15,
+      "network_latency_ms": 2,
       "span_attributes": {
         "db.system": {"type": "string", "value": "postgresql"},
         "db.name": {"type": "string", "value": "items"}

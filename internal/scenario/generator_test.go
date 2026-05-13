@@ -318,6 +318,205 @@ func TestGeneratorChildStartsAfterParentStart(t *testing.T) {
 	}
 }
 
+// TestPairEdgeNetworkLatencyInsetsTargetSpan verifies that a pair edge
+// with NetworkLatency > 0 produces a target-side span whose interval is
+// inset by latency on both sides of the source-side span's interval.
+// This is the realistic shape backends expect: the server records
+// receipt and response after request travel and before response travel,
+// so its interval is strictly inside the client's.
+func TestPairEdgeNetworkLatencyInsetsTargetSpan(t *testing.T) {
+	cfg := Config{
+		Name: "latency-inset",
+		Seed: 42,
+		Services: map[string]ServiceConfig{
+			"client": {Resource: map[string]TypedValue{"service.name": {Type: ValueTypeString, Value: "client"}}},
+			"server": {Resource: map[string]TypedValue{"service.name": {Type: ValueTypeString, Value: "server"}}},
+		},
+		Nodes: map[string]NodeConfig{
+			"a": {Service: "client", SpanName: "caller"},
+			"b": {Service: "server", SpanName: "callee"},
+		},
+		Root: "a",
+		Edges: []EdgeConfig{
+			{From: "a", To: "b", Kind: EdgeKindClientServer, Repeat: 1, DurationMs: 20, NetworkLatencyMs: 3},
+		},
+	}
+	definition, err := cfg.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	g := NewGenerator(definition)
+	spans, err := g.GenerateBatch(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateBatch: %v", err)
+	}
+
+	var client, server model.Span
+	for _, s := range spans {
+		switch s.Kind {
+		case oteltrace.SpanKindClient:
+			client = s
+		case oteltrace.SpanKindServer:
+			server = s
+		}
+	}
+	if client.SpanID == (oteltrace.SpanID{}) {
+		t.Fatalf("client span not found")
+	}
+	if server.SpanID == (oteltrace.SpanID{}) {
+		t.Fatalf("server span not found")
+	}
+
+	latency := 3 * time.Millisecond
+	wantServerStart := client.StartTime.Add(latency)
+	wantServerEnd := client.EndTime.Add(-latency)
+	if !server.StartTime.Equal(wantServerStart) {
+		t.Fatalf("server.start = %s, want client.start + %s = %s", server.StartTime, latency, wantServerStart)
+	}
+	if !server.EndTime.Equal(wantServerEnd) {
+		t.Fatalf("server.end = %s, want client.end - %s = %s", server.EndTime, latency, wantServerEnd)
+	}
+	if !server.StartTime.After(client.StartTime) {
+		t.Fatalf("server.start (%s) must be strictly after client.start (%s)", server.StartTime, client.StartTime)
+	}
+	if !server.EndTime.Before(client.EndTime) {
+		t.Fatalf("server.end (%s) must be strictly before client.end (%s)", server.EndTime, client.EndTime)
+	}
+	if server.ParentSpanID != client.SpanID {
+		t.Fatalf("server parent %s, want client.SpanID %s", server.ParentSpanID, client.SpanID)
+	}
+}
+
+// TestPairEdgeZeroLatencyPreservesSharedInterval verifies that the
+// default (NetworkLatencyMs == 0) keeps the pre-existing behavior where
+// both spans of a pair share start_time and end_time. This guards
+// against accidental regressions for scenarios that don't opt in.
+func TestPairEdgeZeroLatencyPreservesSharedInterval(t *testing.T) {
+	definition := testDefinition(t)
+	g := NewGenerator(definition)
+	spans, err := g.GenerateBatch(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateBatch: %v", err)
+	}
+
+	byID := make(map[oteltrace.SpanID]model.Span, len(spans))
+	for _, s := range spans {
+		byID[s.SpanID] = s
+	}
+
+	// For every server/consumer span whose parent is a client/producer
+	// span (i.e., the pair-edge target side), intervals must match
+	// exactly when the source scenario has no network_latency_ms.
+	for _, s := range spans {
+		isTarget := s.Kind == oteltrace.SpanKindServer || s.Kind == oteltrace.SpanKindConsumer
+		if !isTarget {
+			continue
+		}
+		parent, ok := byID[s.ParentSpanID]
+		if !ok {
+			continue
+		}
+		isPairSource := parent.Kind == oteltrace.SpanKindClient || parent.Kind == oteltrace.SpanKindProducer
+		if !isPairSource {
+			continue
+		}
+		if !s.StartTime.Equal(parent.StartTime) {
+			t.Fatalf("target %s start %s != source %s start %s (expected equal at latency=0)", s.SpanID, s.StartTime, parent.SpanID, parent.StartTime)
+		}
+		if !s.EndTime.Equal(parent.EndTime) {
+			t.Fatalf("target %s end %s != source %s end %s (expected equal at latency=0)", s.SpanID, s.EndTime, parent.SpanID, parent.EndTime)
+		}
+	}
+}
+
+// TestPairEdgeLatencyChildrenFitInsideTarget verifies the
+// subtree-positioning invariant: when a pair edge with latency has a
+// subtree under its target node, the children attach to the (narrower)
+// target span and fit strictly inside its interval, not the client's.
+func TestPairEdgeLatencyChildrenFitInsideTarget(t *testing.T) {
+	cfg := Config{
+		Name: "latency-subtree",
+		Seed: 42,
+		Services: map[string]ServiceConfig{
+			"app": {Resource: map[string]TypedValue{"service.name": {Type: ValueTypeString, Value: "app"}}},
+			"api": {Resource: map[string]TypedValue{"service.name": {Type: ValueTypeString, Value: "api"}}},
+			"db":  {Resource: map[string]TypedValue{"service.name": {Type: ValueTypeString, Value: "db"}}},
+		},
+		Nodes: map[string]NodeConfig{
+			"app": {Service: "app", SpanName: "front"},
+			"api": {Service: "api", SpanName: "backend"},
+			"db":  {Service: "db", SpanName: "query"},
+		},
+		Root: "app",
+		Edges: []EdgeConfig{
+			{From: "app", To: "api", Kind: EdgeKindClientServer, Repeat: 1, DurationMs: 30, NetworkLatencyMs: 4},
+			{From: "api", To: "db", Kind: EdgeKindClientDatabase, Repeat: 1, DurationMs: 10, NetworkLatencyMs: 2},
+		},
+	}
+	definition, err := cfg.Build()
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	g := NewGenerator(definition)
+	spans, err := g.GenerateBatch(context.Background())
+	if err != nil {
+		t.Fatalf("GenerateBatch: %v", err)
+	}
+
+	byID := make(map[oteltrace.SpanID]model.Span, len(spans))
+	for _, s := range spans {
+		byID[s.SpanID] = s
+	}
+
+	// Every non-root span must be temporally contained in its parent,
+	// even with non-zero latencies at every pair edge.
+	for _, s := range spans {
+		if !s.ParentSpanID.IsValid() {
+			continue
+		}
+		parent, ok := byID[s.ParentSpanID]
+		if !ok {
+			t.Fatalf("span %s parent %s not in output", s.SpanID, s.ParentSpanID)
+		}
+		if s.StartTime.Before(parent.StartTime) {
+			t.Fatalf("span %s starts %s before parent %s (parent starts %s)", s.SpanID, s.StartTime, parent.SpanID, parent.StartTime)
+		}
+		if s.EndTime.After(parent.EndTime) {
+			t.Fatalf("span %s ends %s after parent %s (parent ends %s)", s.SpanID, s.EndTime, parent.SpanID, parent.EndTime)
+		}
+	}
+
+	// Specifically: the api server is the parent of the db client, and
+	// the db client (with its own latency) must fit inside the api server.
+	var apiServer, dbClient model.Span
+	for _, s := range spans {
+		switch s.Name {
+		case "backend":
+			if s.Kind == oteltrace.SpanKindServer {
+				apiServer = s
+			}
+		case "front -> backend":
+			// Skip the outer client span.
+		default:
+			if s.Kind == oteltrace.SpanKindClient && s.ParentSpanID == apiServer.SpanID {
+				dbClient = s
+			}
+		}
+	}
+	if apiServer.SpanID == (oteltrace.SpanID{}) {
+		t.Fatalf("api server span not found")
+	}
+	if dbClient.SpanID == (oteltrace.SpanID{}) {
+		t.Fatalf("db client span not found")
+	}
+	if !dbClient.StartTime.After(apiServer.StartTime) {
+		t.Fatalf("db client must start strictly after api server (db.start %s, api.start %s)", dbClient.StartTime, apiServer.StartTime)
+	}
+	if !dbClient.EndTime.Before(apiServer.EndTime) {
+		t.Fatalf("db client must end strictly before api server (db.end %s, api.end %s)", dbClient.EndTime, apiServer.EndTime)
+	}
+}
+
 func TestEstimateDurationPositive(t *testing.T) {
 	outgoing := map[string][]Edge{
 		"a": {{From: "a", To: "b", Repeat: 2, Duration: 10 * time.Millisecond}},

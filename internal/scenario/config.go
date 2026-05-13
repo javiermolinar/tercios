@@ -55,14 +55,33 @@ type LinkConfig struct {
 }
 
 type EdgeConfig struct {
-	From           string                `json:"from"`
-	To             string                `json:"to"`
-	Kind           EdgeKind              `json:"kind"`
-	Repeat         int                   `json:"repeat"`
-	DurationMs     int64                 `json:"duration_ms"`
-	SpanAttributes map[string]TypedValue `json:"span_attributes,omitempty"`
-	SpanEvents     []EventConfig         `json:"span_events,omitempty"`
-	SpanLinks      []LinkConfig          `json:"span_links,omitempty"`
+	From string   `json:"from"`
+	To   string   `json:"to"`
+	Kind EdgeKind `json:"kind"`
+	// Repeat is how many times this edge fires sequentially under its
+	// source node. Each repeat materializes a fresh span (or pair of
+	// spans) and a fresh recursive subtree.
+	Repeat int `json:"repeat"`
+	// DurationMs is the edge's own "work" time, in milliseconds, not
+	// counting its subtree. The full span(s) duration is
+	// DurationMs + subtreeDuration[To] so the resulting span temporally
+	// contains its descendants.
+	DurationMs int64 `json:"duration_ms"`
+	// NetworkLatencyMs is the symmetric one-way network gap between the
+	// source and target sides of a pair edge (ClientServer,
+	// ProducerConsumer, ClientDatabase). The target-side span is inset by
+	// this amount on both sides of the source-side span's interval,
+	// modeling request-travel and response-travel time. Zero (the
+	// default) preserves the historical behavior where both spans share
+	// exactly the same start and end. Must be zero for Internal edges,
+	// where no client/server distinction exists. Validation enforces
+	// 2 * NetworkLatencyMs < DurationMs so the target interval stays
+	// strictly inside the source interval and leaves at least 1ms of
+	// post-children own-work tail.
+	NetworkLatencyMs int64                 `json:"network_latency_ms,omitempty"`
+	SpanAttributes   map[string]TypedValue `json:"span_attributes,omitempty"`
+	SpanEvents       []EventConfig         `json:"span_events,omitempty"`
+	SpanLinks        []LinkConfig          `json:"span_links,omitempty"`
 }
 
 type Config struct {
@@ -163,6 +182,17 @@ func (c Config) Validate() error {
 		}
 		if edge.DurationMs <= 0 {
 			return fmt.Errorf("edge %d: duration_ms must be > 0", i)
+		}
+		if edge.NetworkLatencyMs < 0 {
+			return fmt.Errorf("edge %d: network_latency_ms must be >= 0", i)
+		}
+		if edge.NetworkLatencyMs > 0 {
+			if edge.Kind == EdgeKindInternal {
+				return fmt.Errorf("edge %d: network_latency_ms is not supported on internal edges", i)
+			}
+			if 2*edge.NetworkLatencyMs >= edge.DurationMs {
+				return fmt.Errorf("edge %d: 2 * network_latency_ms (%d) must be < duration_ms (%d)", i, 2*edge.NetworkLatencyMs, edge.DurationMs)
+			}
 		}
 		for key, value := range edge.SpanAttributes {
 			if err := value.Validate(fmt.Sprintf("edge %d span attribute %q", i, key)); err != nil {
