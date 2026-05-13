@@ -1,6 +1,12 @@
 <img width="1024" height="819" alt="Unknown" src="https://github.com/user-attachments/assets/b75377c6-d646-4d5b-b92c-a814feff3345" />
 
-[![Build](https://img.shields.io/github/actions/workflow/status/javiermolinar/tercios/build.yml?branch=main&label=build)](https://github.com/javiermolinar/tercios/actions/workflows/build.yml) [![Test](https://img.shields.io/github/actions/workflow/status/javiermolinar/tercios/test.yml?branch=main&label=test)](https://github.com/javiermolinar/tercios/actions/workflows/test.yml) [![Lint](https://img.shields.io/github/actions/workflow/status/javiermolinar/tercios/lint.yml?branch=main&label=lint)](https://github.com/javiermolinar/tercios/actions/workflows/lint.yml) [![Release](https://img.shields.io/github/v/release/javiermolinar/tercios?display_name=tag)](https://github.com/javiermolinar/tercios/releases) [![License](https://img.shields.io/github/license/javiermolinar/tercios)](./LICENSE)
+<p align="center">
+  <a href="https://github.com/javiermolinar/tercios/actions/workflows/build.yml"><img src="https://img.shields.io/github/actions/workflow/status/javiermolinar/tercios/build.yml?branch=main&label=build&style=flat-square&color=555555&labelColor=222222" alt="Build"></a><br>
+  <a href="https://github.com/javiermolinar/tercios/actions/workflows/test.yml"><img src="https://img.shields.io/github/actions/workflow/status/javiermolinar/tercios/test.yml?branch=main&label=test&style=flat-square&color=555555&labelColor=222222" alt="Test"></a><br>
+  <a href="https://github.com/javiermolinar/tercios/actions/workflows/lint.yml"><img src="https://img.shields.io/github/actions/workflow/status/javiermolinar/tercios/lint.yml?branch=main&label=lint&style=flat-square&color=555555&labelColor=222222" alt="Lint"></a><br>
+  <a href="https://github.com/javiermolinar/tercios/releases"><img src="https://img.shields.io/github/v/release/javiermolinar/tercios?display_name=tag&style=flat-square&color=555555&labelColor=222222" alt="Release"></a><br>
+  <a href="./LICENSE"><img src="https://img.shields.io/github/license/javiermolinar/tercios?style=flat-square&color=555555&labelColor=222222" alt="License"></a>
+</p>
 
 
 Tercios is a Swiss-army-knife CLI tool for generating OTLP traces to test collectors and tracing pipelines. It can be used to stress-test your tracing backend, generate complex scenarios, and introduce chaos.
