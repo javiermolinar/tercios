@@ -26,7 +26,7 @@ Published multi-architecture images are available on Docker Hub. Use version tag
 
 ## How Tercios works
 
-Tercios generates OTLP traces and sends them at configurable concurrency and rate to stress-test collectors, backends, and tracing pipelines. The pipeline has two composable pieces:
+Tercios generates OTLP traces and sends them at configurable concurrency and rate to stress-test collectors, backends, and tracing pipelines. The pipeline has three composable pieces:
 
 1. **Scenarios (trace topology)**
    - A built-in default scenario (5-service web app) is used out of the box — no config needed.
@@ -37,9 +37,13 @@ Tercios generates OTLP traces and sends them at configurable concurrency and rat
    - Enabled with `--chaos-policies-file`.
    - Mutates generated traces (status, attributes, latency, etc.) to test resilience and analysis behavior.
 
+3. **Emission mode**
+   - Default: eager. Each generated trace is exported in a single OTLP request.
+   - `--streaming` paces each trace's spans across wall-clock time according to their `EndTime`. Use this for long-running traces against backends that reject future timestamps (e.g. Tempo). See [CHANGELOG](CHANGELOG.md) v0.7.0 for details.
+
 Scale with `--exporters` (parallel connections), `--max-requests` (volume), `--for` (duration), and `--ramp-up` (gradual warm-up).
 
-In short: **scenario source → optional chaos → export at scale**.
+In short: **scenario source → optional chaos → export (eager or streaming) at scale**.
 
 ## Documentation
 
@@ -185,7 +189,8 @@ tercios --scenario-file=my-scenario.json \
 - `--request-interval` seconds between requests
 - `--for` duration in seconds
 - `--ramp-up` ramp-up duration in seconds (linearly ramps exporter workers)
-- `--export-timeout` per-export timeout in seconds, applied to both the pipeline context and the OTLP SDK client (`0` disables the pipeline timeout and leaves the SDK default of 10s in place; raise this when running with many exporters so burst phases are not aborted by the SDK)
+- `--export-timeout` per-export timeout in seconds, applied to both the pipeline context and the OTLP SDK client (`0` disables the pipeline timeout and leaves the SDK default of 10s in place; raise this when running with many exporters so burst phases are not aborted by the SDK). In streaming mode the pipeline-level wrapper is bypassed and this value applies per inner OTLP request instead.
+- `--streaming` pace each trace's spans by `EndTime` before sending to OTLP (default off). Required for long-running traces (e.g. >10s) against backends that reject future timestamps. In streaming mode, `--exporters` becomes the in-flight cap (one paced trace per exporter worker) and `add_latency` chaos is honored by the pacer.
 - `--scenario-file`, `-s` path to scenario JSON (repeatable; uses embedded default if omitted)
 - `--scenario-strategy` scenario selection strategy for multiple scenario files: `round-robin` or `random`
 - `--scenario-run-seed` trace/span ID namespace for scenario mode (`0` auto-random per process)
