@@ -5,6 +5,25 @@ import (
 	"testing"
 )
 
+func TestDecodeJSONIntegerPrecision(t *testing.T) {
+	input := `{"policies":[{"name":"precision","probability":1,"match":{"attributes":{"id":{"type":"int","value":9007199254740993}}},"actions":[{"type":"set_attribute","scope":"span","name":"id","value":{"type":"int","value":9007199254740993}}]}]}`
+	cfg, err := DecodeJSON(strings.NewReader(input))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []TypedValue{cfg.Policies[0].Match.Attributes["id"], cfg.Policies[0].Actions[0].Value} {
+		got, err := value.ToAttributeValue()
+		if err != nil || got.AsInt64() != 9007199254740993 {
+			t.Fatalf("integer attribute=%v, error=%v", got, err)
+		}
+	}
+	for _, invalid := range []string{"9223372036854775808", "-9223372036854775809"} {
+		if _, err := DecodeJSON(strings.NewReader(strings.ReplaceAll(input, "9007199254740993", invalid))); err == nil {
+			t.Fatalf("accepted out-of-range integer %s", invalid)
+		}
+	}
+}
+
 func TestDecodeJSONValid(t *testing.T) {
 	input := `{
   "seed": 42,
