@@ -36,7 +36,7 @@ func TestExactCLIDryRun(t *testing.T) {
 	single := document(`{`+root+`}`, `[{"from":"a"}]`)
 	request := document(`{`+root+`,`+child+`}`, `[{"from":"a","to":"b"}]`)
 	forest := strings.Replace(request, `"duration_ms":0}`, `"duration_ms":0,"parent":null}`, 1)
-	legacy := strings.Replace(document(`{"a":{"service":"svc","span_name":"request"},"b":{"service":"svc","span_name":"query"}}`, `[{"from":"a","to":"b","kind":"internal","repeat":1,"duration_ms":1}]`), `"nodes":`, `"root":"a","nodes":`, 1)
+	callExpansion := strings.Replace(document(`{"a":{"service":"svc","span_name":"request"},"b":{"service":"svc","span_name":"query"}}`, `[{"from":"a","to":"b","kind":"internal","repeat":1,"duration_ms":1}]`), `"nodes":`, `"root":"a","nodes":`, 1)
 	for _, fixture := range []struct {
 		name          string
 		files         []string
@@ -46,7 +46,7 @@ func TestExactCLIDryRun(t *testing.T) {
 		{"singleton", []string{single}, []int{1}, []int{1}, false},
 		{"request-query", []string{request}, []int{2}, []int{1}, false},
 		{"forest", []string{forest}, []int{2}, []int{2}, true},
-		{"mixed-files", []string{request, legacy}, []int{2, 2}, []int{1, 1}, false},
+		{"mixed-files", []string{request, callExpansion}, []int{2, 2}, []int{1, 1}, false},
 		{"mixed-styles", []string{strings.Replace(request, `"edges":[{"from":"a","to":"b"}]`, `"edges":[{"from":"a","to":"b"},{"from":"a","to":"b","kind":"internal","repeat":1,"duration_ms":1}]`, 1)}, nil, nil, false},
 		{"embedded-default", nil, nil, nil, false},
 	} {
@@ -133,7 +133,7 @@ func TestExactCLIDryRun(t *testing.T) {
 				if len(spans) != fixture.counts[i] || roots != fixture.roots[i] {
 					t.Fatal("count/forest topology differs")
 				}
-				if fixture.files[i] == legacy {
+				if fixture.files[i] == callExpansion {
 					continue
 				}
 				a := byName["request"]

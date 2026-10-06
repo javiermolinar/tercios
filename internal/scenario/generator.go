@@ -121,7 +121,7 @@ func computeSubtreeDurations(rootID string, outgoing map[string][]Edge) map[stri
 }
 
 // GenerateBatch produces one trace without wall-clock pacing. Direct
-// definitions materialize their resolved nodes exactly; legacy definitions
+// definitions materialize their resolved nodes exactly; call-expansion definitions
 // continue to drain the expansion walker used by the streaming exporter.
 func (g *Generator) GenerateBatch(_ context.Context) ([]model.Span, error) {
 	return g.generateBatchAt(time.Now().UTC())
@@ -180,7 +180,7 @@ func (g *Generator) generateDirectBatch(startedAt time.Time) []model.Span {
 }
 
 // directSpanID hashes a domain-separated, fixed-width tuple rather than XORing
-// sequence and ordinal (which aliases adjacent legacy traces). Retry locally
+// sequence and ordinal (which aliases adjacent call-expansion traces). Retry locally
 // on zero or a truncated-hash collision to guarantee valid, unique in-trace
 // IDs. Cross-trace collisions remain probabilistic at the 64-bit span-ID width;
 // trace IDs independently identify each sequence. No mutable state is shared.
@@ -227,7 +227,7 @@ type walker struct {
 // order matches the iterative walker's sequential DFS pre-order.
 func (g *Generator) newWalker(startedAt time.Time) (*walker, error) {
 	if g.definition.direct {
-		return nil, fmt.Errorf("direct node scenarios use the batch streaming exporter, not the legacy walker")
+		return nil, fmt.Errorf("direct node scenarios use the batch streaming exporter, not the call-expansion walker")
 	}
 	if _, ok := g.definition.Nodes[g.definition.Root]; !ok {
 		return nil, fmt.Errorf("root node %q not found", g.definition.Root)
@@ -309,7 +309,7 @@ func (w *walker) popOne() []model.Span {
 		rootSpanID := w.trace.NodeSpans[w.g.definition.Root]
 		duration := emit.DueAt.Sub(w.trace.StartedAt)
 		rootSpan := w.g.newSpan(w.trace.TraceID, rootSpanID, oteltrace.SpanID{}, rootNode,
-			legacySpanFields(oteltrace.SpanKindInternal, w.trace.StartedAt, duration, nil, nil, nil))
+			callExpansionSpanFields(oteltrace.SpanKindInternal, w.trace.StartedAt, duration, nil, nil, nil))
 		w.trace.InFlight--
 		return []model.Span{rootSpan}
 	}
@@ -428,7 +428,7 @@ func (g *Generator) materializeChild(
 	case EdgeKindInternal:
 		internalID := idState.next()
 		internalSpan := g.newSpan(traceID, internalID, parentSpanID, child.TargetNode,
-			legacySpanFields(oteltrace.SpanKindInternal, start, effDur, edge.SpanAttributes, events, links))
+			callExpansionSpanFields(oteltrace.SpanKindInternal, start, effDur, edge.SpanAttributes, events, links))
 		return materializedChild{
 			Spans:        []model.Span{internalSpan},
 			TargetSpanID: internalID,
@@ -461,14 +461,14 @@ func (g *Generator) materializePair(
 
 	firstID := idState.next()
 	firstSpan := g.newSpan(traceID, firstID, parentSpanID, child.SourceNode,
-		legacySpanFields(firstKind, start, effDur, edge.SpanAttributes, events, links))
+		callExpansionSpanFields(firstKind, start, effDur, edge.SpanAttributes, events, links))
 	firstSpan.Name = edgeSpanName(child.SourceNode, child.TargetNode)
 
 	secondStart := start.Add(edge.NetworkLatency)
 	secondDur := effDur - 2*edge.NetworkLatency
 	secondID := idState.next()
 	secondSpan := g.newSpan(traceID, secondID, firstID, child.TargetNode,
-		legacySpanFields(secondKind, secondStart, secondDur, edge.SpanAttributes, nil, nil))
+		callExpansionSpanFields(secondKind, secondStart, secondDur, edge.SpanAttributes, nil, nil))
 
 	return materializedChild{
 		Spans:        []model.Span{firstSpan, secondSpan},
@@ -487,8 +487,8 @@ type spanFields struct {
 	Links             []model.Link
 }
 
-// Legacy expansion supplies its defaults before shared materialization.
-func legacySpanFields(kind oteltrace.SpanKind, start time.Time, duration time.Duration,
+// Call expansion supplies its defaults before shared materialization.
+func callExpansionSpanFields(kind oteltrace.SpanKind, start time.Time, duration time.Duration,
 	attrs map[string]attribute.Value, events []model.Event, links []model.Link,
 ) spanFields {
 	if duration <= 0 {

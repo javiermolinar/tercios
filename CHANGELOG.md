@@ -3,6 +3,31 @@
 All notable changes are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 version numbers follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Exact span construction in the existing scenario dialect.** Kind-free
+  connections construct one span per node, including from-only singletons and
+  forests. Native fields live on nodes: kind, parent, status, typed attributes,
+  events, links, start offset and total duration. Explicit null parents make
+  roots; repeated names remain distinct when node IDs differ. Defaults are
+  UNSPECIFIED kind, UNSET status, zero offset and 1ms duration; explicit zero
+  duration is preserved. No extra root, caller or connector is inserted.
+- Exact and call-expansion file selection through the existing CLI, deterministic seed
+  namespaces, chaos, dry-run JSON/summary and gRPC/HTTP OTLP conversion.
+- Exact and call-expansion example scenarios.
+
+### Changed
+
+- Generic EndTime streaming rebases nonzero event timestamps with their spans
+  without modifying the input event container, and observes cancellation
+  between emit groups. Forests use this exporter; the call-expansion walker remains
+  limited to call expansion.
+- Scenario documentation explains mode inference, authoritative parents,
+  validation, native defaults and raw JSON versus OTLP. Existing edge kinds,
+  expansion, IDs, timing and embedded/slow examples remain unchanged.
+
 ## [v0.7.0] — 2026-05-13
 
 This release adds the user-facing `--streaming` mode that v0.6.0's

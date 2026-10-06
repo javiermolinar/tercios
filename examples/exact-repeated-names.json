@@ -1,0 +1,13 @@
+{
+  "name": "repeated-names",
+  "services": {
+    "api": {"resource": {"service.name": {"type": "string", "value": "api"}}},
+    "db": {"resource": {"service.name": {"type": "string", "value": "postgres"}}}
+  },
+  "nodes": {
+    "root": {"service": "api", "span_name": "request", "kind": "SERVER", "duration_ms": 10},
+    "query-a": {"service": "db", "span_name": "query", "kind": "CLIENT", "start_offset_ms": 2},
+    "query-b": {"service": "db", "span_name": "query", "kind": "CLIENT", "start_offset_ms": 3, "duration_ms": 2}
+  },
+  "edges": [{"from": "root", "to": "query-a"}, {"from": "root", "to": "query-b"}, {"from": "root", "to": "query-a"}]
+}

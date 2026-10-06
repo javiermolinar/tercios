@@ -1,0 +1,10 @@
+{
+  "name": "forest",
+  "services": {"app": {"resource": {"service.name": {"type": "string", "value": "app"}}}},
+  "nodes": {
+    "request": {"service": "app", "span_name": "request", "kind": "SERVER", "duration_ms": 10},
+    "query": {"service": "app", "span_name": "query", "kind": "CLIENT", "parent": null, "start_offset_ms": 2, "duration_ms": 3}
+  },
+  "root": "request",
+  "edges": [{"from": "request", "to": "query"}]
+}

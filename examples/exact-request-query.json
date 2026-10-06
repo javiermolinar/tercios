@@ -1,0 +1,28 @@
+{
+  "name": "request-query",
+  "seed": 42,
+  "services": {
+    "api": {"resource": {"service.name": {"type": "string", "value": "api"}}},
+    "db": {"resource": {"service.name": {"type": "string", "value": "postgres"}}}
+  },
+  "nodes": {
+    "request": {
+      "service": "api", "span_name": "POST /posts", "kind": "SERVER",
+      "duration_ms": 10, "status": {"code": "ERROR", "description": "raw failure"},
+      "span_attributes": {
+        "http.request.method": {"type": "string", "value": "POST"},
+        "http.route": {"type": "string", "value": "/posts"},
+        "span.kind": {"type": "string", "value": "attribute-only"}
+      },
+      "span_events": [{"name": "cache.miss", "attributes": {"hit": {"type": "bool", "value": false}}}],
+      "span_links": [{"node": "query", "attributes": {"attempt": {"type": "int", "value": 1}}}]
+    },
+    "query": {
+      "service": "db", "span_name": "SELECT posts", "kind": "CLIENT",
+      "start_offset_ms": 2, "duration_ms": 3, "status": {"code": "OK"},
+      "span_attributes": {"db.operation.name": {"type": "string", "value": "SELECT"}}
+    }
+  },
+  "root": "request",
+  "edges": [{"from": "request", "to": "query"}]
+}

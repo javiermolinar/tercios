@@ -33,7 +33,7 @@ type Node struct {
 	Service  string
 	SpanName string
 
-	// Resolved fields for direct construction. Legacy call expansion derives
+	// Resolved fields for direct construction. Call expansion derives
 	// these from edges instead.
 	Parent            string
 	Kind              oteltrace.SpanKind

@@ -77,7 +77,7 @@ func TestNewBatchGeneratorFromFilesMultiple(t *testing.T) {
 	}
 }
 
-func TestNewBatchGeneratorFromFilesDirectAndLegacy(t *testing.T) {
+func TestNewBatchGeneratorFromFilesDirectAndCallExpansion(t *testing.T) {
 	for _, root := range []string{"a", ""} {
 		dir := t.TempDir()
 		directPath, callPath := filepath.Join(dir, "direct.json"), filepath.Join(dir, "calls.json")

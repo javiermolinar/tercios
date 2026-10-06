@@ -279,37 +279,37 @@ func TestGeneratorEmitsEventsAndLinks(t *testing.T) {
 	}
 
 	if len(spans) != 2 {
-		t.Fatalf("legacy event/link span count=%d, want 2", len(spans))
+		t.Fatalf("call-expansion event/link span count=%d, want 2", len(spans))
 	}
 	var rootID oteltrace.SpanID
 	for _, span := range spans {
 		if span.Name == "A" {
 			rootID = span.SpanID
 			if span.ParentSpanID.IsValid() || len(span.Events) != 0 || len(span.Links) != 0 || span.Attributes["service.name"] != attribute.StringValue("svc") {
-				t.Fatalf("legacy root fields differ: %+v", span)
+				t.Fatalf("call-expansion root fields differ: %+v", span)
 			}
 		}
 	}
 	if !rootID.IsValid() {
-		t.Fatal("legacy root missing")
+		t.Fatal("call-expansion root missing")
 	}
 	// Find the span with events (the internal span from edge a->b).
 	foundEvent := false
 	foundLink := false
 	for _, span := range spans {
 		if span.Kind != oteltrace.SpanKindInternal || span.StatusCode != codes.Ok || span.StatusDescription != "" || !reflect.DeepEqual(span.ResourceAttributes, map[string]attribute.Value{"service.name": attribute.StringValue("svc")}) {
-			t.Fatalf("legacy native/resource fields differ: %+v", span)
+			t.Fatalf("call-expansion native/resource fields differ: %+v", span)
 		}
 		if span.Name == "B" {
 			if span.ParentSpanID != rootID || len(span.Events) != 1 || len(span.Links) != 1 || !reflect.DeepEqual(span.Attributes, map[string]attribute.Value{"service.name": attribute.Int64Value(7), "span.kind": attribute.StringValue("SERVER")}) {
-				t.Fatalf("legacy child attribute precedence/events/links differ: %+v", span)
+				t.Fatalf("call-expansion child attribute precedence/events/links differ: %+v", span)
 			}
 		}
 		for _, event := range span.Events {
 			if event.Name == "cache.miss" {
 				foundEvent = true
 				if !reflect.DeepEqual(event.Attributes, []attribute.KeyValue{attribute.String("cache.key", "items:list")}) || !event.Time.Equal(span.StartTime.Add(5*time.Millisecond)) {
-					t.Fatalf("legacy event attributes/midpoint differ: %+v", event)
+					t.Fatalf("call-expansion event attributes/midpoint differ: %+v", event)
 				}
 				if event.Time.Before(span.StartTime) || event.Time.After(span.EndTime) {
 					t.Fatalf("expected event time inside span duration, got event=%s start=%s end=%s", event.Time, span.StartTime, span.EndTime)
@@ -320,7 +320,7 @@ func TestGeneratorEmitsEventsAndLinks(t *testing.T) {
 			if link.SpanContext.IsValid() {
 				foundLink = true
 				if link.SpanContext.TraceID() != span.TraceID || link.SpanContext.SpanID() != rootID || link.SpanContext.TraceFlags() != oteltrace.FlagsSampled || !reflect.DeepEqual(link.Attributes, []attribute.KeyValue{attribute.String("link.type", "follows_from")}) {
-					t.Fatalf("legacy link reference/attributes differ: %+v", link)
+					t.Fatalf("call-expansion link reference/attributes differ: %+v", link)
 				}
 			}
 		}
@@ -675,7 +675,7 @@ func batchAt(t testing.TB, g *Generator, anchor time.Time) []model.Span {
 	return spans
 }
 
-func TestGeneratorLegacyLiteralCharacterization(t *testing.T) {
+func TestGeneratorCallExpansionLiteralCharacterization(t *testing.T) {
 	anchor := time.Unix(1700000000, 0).UTC()
 	for _, kind := range []EdgeKind{EdgeKindClientServer, EdgeKindClientDatabase, EdgeKindProducerConsumer, EdgeKindInternal} {
 		t.Run(string(kind), func(t *testing.T) {
@@ -1041,11 +1041,11 @@ func TestGeneratorDirectTiming(t *testing.T) {
 	}
 }
 
-func TestLegacySpanDefaults(t *testing.T) {
+func TestCallExpansionSpanDefaults(t *testing.T) {
 	for _, duration := range []time.Duration{0, -time.Millisecond, 3 * time.Millisecond} {
-		fields := legacySpanFields(oteltrace.SpanKindClient, time.Time{}, duration, nil, nil, nil)
+		fields := callExpansionSpanFields(oteltrace.SpanKindClient, time.Time{}, duration, nil, nil, nil)
 		if fields.StatusCode != codes.Ok || fields.Kind != oteltrace.SpanKindClient || fields.Duration != max(duration, time.Millisecond) {
-			t.Fatal("legacy defaults changed")
+			t.Fatal("call-expansion defaults changed")
 		}
 	}
 }
