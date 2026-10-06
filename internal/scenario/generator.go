@@ -152,6 +152,9 @@ type walker struct {
 // root's direct children, siblings staggered by stepDuration so heap-pop
 // order matches the iterative walker's sequential DFS pre-order.
 func (g *Generator) newWalker(startedAt time.Time) (*walker, error) {
+	if err := g.definition.checkGenerationSupport(); err != nil {
+		return nil, err
+	}
 	if _, ok := g.definition.Nodes[g.definition.Root]; !ok {
 		return nil, fmt.Errorf("root node %q not found", g.definition.Root)
 	}

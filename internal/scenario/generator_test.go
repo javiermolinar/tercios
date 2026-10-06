@@ -2,6 +2,7 @@ package scenario
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -55,7 +56,59 @@ func TestGeneratorEmitsExpectedShape(t *testing.T) {
 	}
 }
 
-func TestGeneratorDeterministicTraceIDForFirstBatch(t *testing.T) {
+func directScenarioJSON(root string) string {
+	rootField := ""
+	if root != "" {
+		rootField = `"root":"` + root + `",`
+	}
+	return `{"name":"direct","services":{"svc":{}},` + rootField + `"nodes":{
+		"a":{"service":"svc","kind":"SERVER","duration_ms":20,"status":{"code":"ERROR"}},
+		"b":{"service":"svc","kind":"CLIENT","start_offset_ms":2,"duration_ms":5}},
+		"edges":[{"from":"a","to":"b"}]}`
+}
+
+func TestGeneratorRejectsDirectDefinitions(t *testing.T) {
+	for _, root := range []string{"a", ""} {
+		t.Run("root="+root, func(t *testing.T) {
+			cfg, err := DecodeJSON(strings.NewReader(directScenarioJSON(root)))
+			if err != nil {
+				t.Fatalf("direct definitions must remain decodable: %v", err)
+			}
+			definition, err := cfg.Build()
+			if err != nil {
+				t.Fatalf("direct definitions must remain buildable: %v", err)
+			}
+			g := NewGenerator(definition)
+			spans, err := g.GenerateBatch(context.Background())
+			if err == nil || err.Error() != "direct node generation is not implemented" || len(spans) != 0 {
+				t.Fatalf("expected unsupported-generation error and no spans, got spans=%+v error=%v", spans, err)
+			}
+			walker, err := g.NewStreamingWalker(time.Now())
+			if err == nil || err.Error() != "direct node generation is not implemented" || walker != nil {
+				t.Fatalf("expected unsupported-generation error and no walker, got walker=%v error=%v", walker, err)
+			}
+			if g.counter.Load() != 0 {
+				t.Fatal("rejected generation consumed a trace sequence")
+			}
+			if multi, err := NewMultiGenerator([]Definition{testDefinition(t), definition}, SelectionStrategyRoundRobin, 1); err == nil || !strings.Contains(err.Error(), "direct node generation is not implemented") || multi != nil {
+				t.Fatalf("expected mixed-generator setup rejection, got generator=%v error=%v", multi, err)
+			}
+		})
+	}
+}
+
+func TestGeneratorRootOnlyDefinitionStillSupported(t *testing.T) {
+	// A manually constructed root-only definition is not a compiled direct
+	// scenario; empty edges alone must not identify the unsupported mode.
+	definition := testDefinition(t)
+	definition.Edges = nil
+	spans, err := NewGenerator(definition).GenerateBatch(context.Background())
+	if err != nil || len(spans) != 1 {
+		t.Fatalf("root-only generation changed: spans=%+v error=%v", spans, err)
+	}
+}
+
+func TestGeneratorDeterministicIDs(t *testing.T) {
 	definition := testDefinition(t)
 
 	g1 := NewGenerator(definition)
@@ -73,8 +126,74 @@ func TestGeneratorDeterministicTraceIDForFirstBatch(t *testing.T) {
 	if len(batch1) == 0 || len(batch2) == 0 {
 		t.Fatalf("expected non-empty batches")
 	}
-	if batch1[0].TraceID != batch2[0].TraceID {
-		t.Fatalf("expected deterministic first trace ID, got %s vs %s", batch1[0].TraceID, batch2[0].TraceID)
+	for sequence := 0; sequence < 2; sequence++ {
+		if len(batch1) != len(batch2) {
+			t.Fatalf("sequence %d: span counts differ", sequence)
+		}
+		for i := range batch1 {
+			a, b := batch1[i], batch2[i]
+			if !a.TraceID.IsValid() || !a.SpanID.IsValid() {
+				t.Fatalf("sequence %d span %d: invalid IDs", sequence, i)
+			}
+			if a.TraceID != b.TraceID || a.SpanID != b.SpanID || a.ParentSpanID != b.ParentSpanID {
+				t.Fatalf("sequence %d span %d: IDs differ across fresh generators", sequence, i)
+			}
+		}
+		if sequence == 0 {
+			firstTraceID := batch1[0].TraceID
+			batch1, err = g1.GenerateBatch(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			batch2, err = g2.GenerateBatch(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(batch1) == 0 || len(batch2) == 0 {
+				t.Fatal("expected non-empty second batches")
+			}
+			if batch1[0].TraceID == firstTraceID {
+				t.Fatal("successive batches reused a trace ID")
+			}
+		}
+	}
+}
+
+func TestGeneratorOutputMapsDoNotMutateDefinition(t *testing.T) {
+	definition := testDefinition(t)
+	definition.Edges[0].SpanAttributes = map[string]attribute.Value{"operation": attribute.StringValue("original")}
+	generator := NewGenerator(definition)
+	batch, err := generator.GenerateBatch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(batch) == 0 {
+		t.Fatal("expected non-empty batch")
+	}
+	for _, span := range batch {
+		span.ResourceAttributes["service.name"] = attribute.StringValue("mutated")
+		span.Attributes["operation"] = attribute.StringValue("mutated")
+	}
+	for _, next := range []*Generator{generator, NewGenerator(definition)} {
+		batch, err := next.GenerateBatch(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		foundOperation := false
+		for _, span := range batch {
+			if span.ResourceAttributes["service.name"].AsString() == "mutated" {
+				t.Fatal("generated resource map mutation leaked into later traces")
+			}
+			if value, ok := span.Attributes["operation"]; ok {
+				foundOperation = true
+				if value.AsString() != "original" {
+					t.Fatal("generated attribute map mutation leaked into later traces")
+				}
+			}
+		}
+		if !foundOperation {
+			t.Fatal("expected configured operation attribute")
+		}
 	}
 }
 

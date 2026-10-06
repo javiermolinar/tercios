@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/javiermolinar/tercios/internal/model"
@@ -73,6 +74,28 @@ func TestNewBatchGeneratorFromFilesMultiple(t *testing.T) {
 	}
 	if a, b := rootSpanName(first), rootSpanName(second); a != "root-a" || b != "root-b" {
 		t.Fatalf("expected round robin root-a/root-b, got %q/%q", a, b)
+	}
+}
+
+func TestNewBatchGeneratorFromFilesRejectsDirectDefinitions(t *testing.T) {
+	for _, root := range []string{"a", ""} {
+		t.Run("root="+root, func(t *testing.T) {
+			dir := t.TempDir()
+			directPath := filepath.Join(dir, "direct.json")
+			if err := os.WriteFile(directPath, []byte(directScenarioJSON(root)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			callPath := filepath.Join(dir, "calls.json")
+			if err := os.WriteFile(callPath, []byte(minimalScenarioJSON("calls", 1, "root")), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			for _, paths := range [][]string{{directPath}, {callPath, directPath}} {
+				generator, err := NewBatchGeneratorFromFilesWithRunSeed(paths, SelectionStrategyRoundRobin, 77)
+				if err == nil || !strings.Contains(err.Error(), "direct node generation is not implemented") || generator != nil {
+					t.Fatalf("expected setup rejection for %v, got generator=%v error=%v", paths, generator, err)
+				}
+			}
+		})
 	}
 }
 

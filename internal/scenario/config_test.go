@@ -1,6 +1,8 @@
 package scenario
 
 import (
+	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -78,6 +80,163 @@ func TestDecodeJSONAndBuildValidScenario(t *testing.T) {
 	status := definition.Edges[0].SpanAttributes["http.response.status_code"]
 	if status.Type() != attribute.INT64 || status.AsInt64() != 200 {
 		t.Fatalf("expected http.response.status_code int64=200, got %s/%s", status.Type(), status.Emit())
+	}
+}
+
+func TestDecodeJSONOptionalSpanNameFallback(t *testing.T) {
+	for _, mode := range []string{"call-expansion", "direct"} {
+		for _, tc := range []struct {
+			name  string
+			field string
+		}{
+			{"omitted", ""},
+			{"empty", `,"span_name":""`},
+			{"null", `,"span_name":null`},
+			{"case-folded-null", `,"SPAN_NAME":null`},
+		} {
+			t.Run(mode+"/"+tc.name, func(t *testing.T) {
+				edge := `{"from":"a","to":"b"}`
+				if mode == "call-expansion" {
+					edge = `{"from":"a","to":"b","kind":"internal","repeat":1,"duration_ms":1}`
+				}
+				input := `{"name":"fallback","services":{"svc":{}},"root":"a","nodes":{
+					"a":{"service":"svc"` + tc.field + `},
+					"b":{"service":"svc"` + tc.field + `}},"edges":[` + edge + `]}`
+				cfg, err := DecodeJSON(strings.NewReader(input))
+				if err != nil {
+					t.Fatal(err)
+				}
+				definition, err := cfg.Build()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if mode == "direct" {
+					for id, node := range definition.Nodes {
+						if node.SpanName != id {
+							t.Fatalf("node %s name = %q, want node ID", id, node.SpanName)
+						}
+					}
+					return // Direct generation is not implemented yet.
+				}
+				spans, err := NewGenerator(definition).GenerateBatch(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(spans) != 2 {
+					t.Fatalf("got %d spans, want 2", len(spans))
+				}
+				seen := map[string]bool{}
+				for _, span := range spans {
+					seen[span.Name] = true
+				}
+				if !seen["a"] || !seen["b"] {
+					t.Fatalf("span names do not fall back to node IDs: %v", seen)
+				}
+			})
+		}
+	}
+}
+
+func TestDecodeJSONRejectsNullNativeNodeFields(t *testing.T) {
+	for _, field := range []string{
+		`"kind":null`, `"status":null`, `"start_offset_ms":null`, `"duration_ms":null`,
+		`"span_attributes":null`, `"span_events":null`, `"span_links":null`,
+		`"status":{"code":null}`, `"status":{"description":null}`,
+	} {
+		t.Run(field, func(t *testing.T) {
+			input := `{"name":"null-native","services":{"svc":{}},"nodes":{"a":{"service":"svc",` + field + `}},"edges":[{"from":"a"}]}`
+			if _, err := DecodeJSON(strings.NewReader(input)); err == nil {
+				t.Fatal("accepted null native field")
+			}
+		})
+	}
+}
+
+func TestBuildSharedAttributeCompilation(t *testing.T) {
+	makeConfig := func(mode string) Config {
+		cfg := Config{
+			Name: "attribute-compilation", Root: "a",
+			Services: map[string]ServiceConfig{"svc": {Resource: map[string]TypedValue{
+				"service.name": {Type: ValueTypeString, Value: "svc"},
+			}}},
+			Nodes: map[string]NodeConfig{"a": {Service: "svc"}, "b": {Service: "svc"}, "c": {Service: "svc"}},
+			Edges: []EdgeConfig{{From: "a", To: "b"}, {From: "a", To: "c"}},
+		}
+		attrs := map[string]TypedValue{"attempts": {Type: ValueTypeIntArray, Value: []any{1, 2}}}
+		eventAttrs := map[string]TypedValue{"z": {Type: ValueTypeBool, Value: true}, "a": {Type: ValueTypeInt, Value: 1}}
+		linkAttrs := map[string]TypedValue{"z": {Type: ValueTypeString, Value: "last"}, "a": {Type: ValueTypeInt, Value: 2}}
+		events := []EventConfig{{Name: "second", Attributes: eventAttrs}, {Name: "first"}}
+		links := []LinkConfig{{Node: "c", Attributes: linkAttrs}, {Node: "a"}}
+		if mode == "direct" {
+			node := cfg.Nodes["b"]
+			node.SpanAttributes, node.SpanEvents, node.SpanLinks = attrs, events, links
+			cfg.Nodes["b"] = node
+		} else {
+			for i := range cfg.Edges {
+				cfg.Edges[i].Kind, cfg.Edges[i].Repeat, cfg.Edges[i].DurationMs = EdgeKindInternal, 1, 1
+			}
+			cfg.Edges[0].SpanAttributes, cfg.Edges[0].SpanEvents, cfg.Edges[0].SpanLinks = attrs, events, links
+		}
+		return cfg
+	}
+	for _, mode := range []string{"call-expansion", "direct"} {
+		t.Run(mode, func(t *testing.T) {
+			definition, err := makeConfig(mode).Build()
+			if err != nil {
+				t.Fatal(err)
+			}
+			attrs := definition.Nodes["b"].SpanAttributes
+			events := definition.Nodes["b"].SpanEvents
+			links := definition.Nodes["b"].SpanLinks
+			if mode == "call-expansion" {
+				attrs, events, links = definition.Edges[0].SpanAttributes, definition.Edges[0].SpanEvents, definition.Edges[0].SpanLinks
+			} else if cap(definition.Edges) != 0 {
+				t.Fatal("direct compilation allocated unused edge capacity")
+			}
+			if len(definition.Nodes) != 3 || definition.Services["svc"].ResourceAttributes["service.name"].AsString() != "svc" || !reflect.DeepEqual(attrs["attempts"].AsInt64Slice(), []int64{1, 2}) {
+				t.Fatal("node, resource or span attributes lost during compilation")
+			}
+			wantEvents := []EventDef{{Name: "second", Attributes: []attribute.KeyValue{attribute.Int64("a", 1), attribute.Bool("z", true)}}, {Name: "first"}}
+			wantLinks := []LinkDef{{Node: "c", Attributes: []attribute.KeyValue{attribute.Int64("a", 2), attribute.String("z", "last")}}, {Node: "a"}}
+			if !reflect.DeepEqual(events, wantEvents) || !reflect.DeepEqual(links, wantLinks) {
+				t.Fatalf("event/link order, sorted attributes or empty attributes changed: events=%+v links=%+v", events, links)
+			}
+			// Conversion alone accepts zero-sized generated strings. Validation
+			// must still reject them at every attribute location in both modes.
+			for _, location := range []string{"resource", "span", "event", "link"} {
+				t.Run("invalid-"+location, func(t *testing.T) {
+					cfg := makeConfig(mode)
+					zero := 0
+					invalid := map[string]TypedValue{"bad": {Type: ValueTypeString, Size: &zero}}
+					if location == "resource" {
+						cfg.Services["svc"] = ServiceConfig{Resource: invalid}
+					} else if mode == "direct" {
+						node := cfg.Nodes["b"]
+						switch location {
+						case "span":
+							node.SpanAttributes = invalid
+						case "event":
+							node.SpanEvents[0].Attributes = invalid
+						case "link":
+							node.SpanLinks[0].Attributes = invalid
+						}
+						cfg.Nodes["b"] = node
+					} else {
+						switch location {
+						case "span":
+							cfg.Edges[0].SpanAttributes = invalid
+						case "event":
+							cfg.Edges[0].SpanEvents[0].Attributes = invalid
+						case "link":
+							cfg.Edges[0].SpanLinks[0].Attributes = invalid
+						}
+					}
+					if _, err := cfg.Build(); err == nil || !strings.Contains(err.Error(), "size must be > 0") {
+						t.Fatalf("expected size validation error, got %v", err)
+					}
+				})
+			}
+		})
 	}
 }
 
