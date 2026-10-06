@@ -34,7 +34,7 @@ type Node struct {
 	SpanName string
 
 	// Resolved fields for direct construction. Legacy call expansion derives
-	// these from edges instead. Generation support for direct nodes is pending.
+	// these from edges instead.
 	Parent            string
 	Kind              oteltrace.SpanKind
 	StatusCode        codes.Code

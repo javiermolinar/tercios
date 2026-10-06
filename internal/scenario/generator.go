@@ -2,8 +2,10 @@ package scenario
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/binary"
 	"fmt"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -62,6 +64,9 @@ func (g *Generator) NextChildren(parentNodeID string) []ChildSpec {
 }
 
 func NewGenerator(definition Definition) *Generator {
+	if definition.direct {
+		return &Generator{definition: definition}
+	}
 	outgoing := make(map[string][]Edge, len(definition.Nodes))
 	for _, edge := range definition.Edges {
 		outgoing[edge.From] = append(outgoing[edge.From], edge)
@@ -115,22 +120,91 @@ func computeSubtreeDurations(rootID string, outgoing map[string][]Edge) map[stri
 	return out
 }
 
-// GenerateBatch produces all spans of one trace by constructing a walker
-// and draining its heap immediately (no wall-clock pacing). The streaming
-// exporter uses the same walker via NewStreamingWalker, popping one emit
-// at a time and waiting until each emit's DueAt before forwarding to OTLP.
+// GenerateBatch produces one trace without wall-clock pacing. Direct
+// definitions materialize their resolved nodes exactly; legacy definitions
+// continue to drain the expansion walker used by the streaming exporter.
 func (g *Generator) GenerateBatch(_ context.Context) ([]model.Span, error) {
+	return g.generateBatchAt(time.Now().UTC())
+}
+
+// generateBatchAt keeps the batch clock injectable for anchored comparisons.
+func (g *Generator) generateBatchAt(startedAt time.Time) ([]model.Span, error) {
 	if g == nil {
 		return nil, fmt.Errorf("scenario generator not configured")
 	}
 	if len(g.definition.Nodes) == 0 {
 		return nil, fmt.Errorf("scenario definition has no nodes")
 	}
-	w, err := g.newWalker(time.Now().UTC())
+	if g.definition.direct {
+		return g.generateDirectBatch(startedAt), nil
+	}
+	w, err := g.newWalker(startedAt)
 	if err != nil {
 		return nil, err
 	}
 	return w.drain(), nil
+}
+
+// generateDirectBatch consumes the compiled forest, not its original
+// connections. Sorting node IDs gives a stable order independent of map
+// iteration; separate allocation and materialization passes allow parents
+// to occur later in that order. Neither pass traverses the topology.
+func (g *Generator) generateDirectBatch(startedAt time.Time) []model.Span {
+	sequence := g.counter.Add(1)
+	traceID := traceIDFromSeed(g.definition.Seed, sequence)
+	ids := sortedKeys(g.definition.Nodes)
+	nodeSpans := make(map[string]oteltrace.SpanID, len(ids))
+	used := make(map[oteltrace.SpanID]struct{}, len(ids))
+	for i, id := range ids {
+		nodeSpans[id] = directSpanID(g.definition.Seed, sequence, uint64(i)+1, used)
+	}
+
+	spans := make([]model.Span, 0, len(ids))
+	for _, id := range ids {
+		node := g.definition.Nodes[id]
+		// Parent is authoritative and already validated by compilation.
+		// An empty Parent represents a real root, including null overrides.
+		parentID := nodeSpans[node.Parent]
+		spans = append(spans, g.newSpan(traceID, nodeSpans[id], parentID, node, spanFields{
+			Kind:              node.Kind,
+			StatusCode:        node.StatusCode,
+			StatusDescription: node.StatusDescription,
+			Start:             startedAt.Add(node.StartOffset),
+			Duration:          node.Duration,
+			Attributes:        node.SpanAttributes,
+			Events:            resolveEvents(node.SpanEvents),
+			Links:             resolveLinks(traceID, node.SpanLinks, nodeSpans),
+		}))
+	}
+	return spans
+}
+
+// directSpanID hashes a domain-separated, fixed-width tuple rather than XORing
+// sequence and ordinal (which aliases adjacent legacy traces). Retry locally
+// on zero or a truncated-hash collision to guarantee valid, unique in-trace
+// IDs. Cross-trace collisions remain probabilistic at the 64-bit span-ID width;
+// trace IDs independently identify each sequence. No mutable state is shared.
+func directSpanID(seed int64, sequence, ordinal uint64, used map[oteltrace.SpanID]struct{}) oteltrace.SpanID {
+	const domain = "tercios/direct-span/v1\x00"
+	var input [len(domain) + 32]byte
+	copy(input[:], domain)
+	binary.BigEndian.PutUint64(input[len(domain):], uint64(seed))
+	binary.BigEndian.PutUint64(input[len(domain)+8:], sequence)
+	binary.BigEndian.PutUint64(input[len(domain)+16:], ordinal)
+	for retry := uint64(0); ; retry++ {
+		binary.BigEndian.PutUint64(input[len(domain)+24:], retry)
+		digest := sha256.Sum256(input[:])
+		var id oteltrace.SpanID
+		copy(id[:], digest[:8])
+		if !id.IsValid() {
+			continue
+		}
+		if _, exists := used[id]; exists {
+			continue
+		}
+		used[id] = struct{}{}
+		return id
+	}
 }
 
 // walker is the trace-emission engine. It owns one trace's mutable state
@@ -234,7 +308,8 @@ func (w *walker) popOne() []model.Span {
 		rootNode := w.g.definition.Nodes[w.g.definition.Root]
 		rootSpanID := w.trace.NodeSpans[w.g.definition.Root]
 		duration := emit.DueAt.Sub(w.trace.StartedAt)
-		rootSpan := w.g.newSpan(w.trace.TraceID, rootSpanID, oteltrace.SpanID{}, rootNode, oteltrace.SpanKindInternal, w.trace.StartedAt, duration, nil, nil, nil)
+		rootSpan := w.g.newSpan(w.trace.TraceID, rootSpanID, oteltrace.SpanID{}, rootNode,
+			legacySpanFields(oteltrace.SpanKindInternal, w.trace.StartedAt, duration, nil, nil, nil))
 		w.trace.InFlight--
 		return []model.Span{rootSpan}
 	}
@@ -352,7 +427,8 @@ func (g *Generator) materializeChild(
 		return g.materializePair(child, traceID, parentSpanID, start, effDur, idState, events, links, oteltrace.SpanKindClient, oteltrace.SpanKindServer)
 	case EdgeKindInternal:
 		internalID := idState.next()
-		internalSpan := g.newSpan(traceID, internalID, parentSpanID, child.TargetNode, oteltrace.SpanKindInternal, start, effDur, edge.SpanAttributes, events, links)
+		internalSpan := g.newSpan(traceID, internalID, parentSpanID, child.TargetNode,
+			legacySpanFields(oteltrace.SpanKindInternal, start, effDur, edge.SpanAttributes, events, links))
 		return materializedChild{
 			Spans:        []model.Span{internalSpan},
 			TargetSpanID: internalID,
@@ -384,13 +460,15 @@ func (g *Generator) materializePair(
 	edge := child.Edge
 
 	firstID := idState.next()
-	firstSpan := g.newSpan(traceID, firstID, parentSpanID, child.SourceNode, firstKind, start, effDur, edge.SpanAttributes, events, links)
+	firstSpan := g.newSpan(traceID, firstID, parentSpanID, child.SourceNode,
+		legacySpanFields(firstKind, start, effDur, edge.SpanAttributes, events, links))
 	firstSpan.Name = edgeSpanName(child.SourceNode, child.TargetNode)
 
 	secondStart := start.Add(edge.NetworkLatency)
 	secondDur := effDur - 2*edge.NetworkLatency
 	secondID := idState.next()
-	secondSpan := g.newSpan(traceID, secondID, firstID, child.TargetNode, secondKind, secondStart, secondDur, edge.SpanAttributes, nil, nil)
+	secondSpan := g.newSpan(traceID, secondID, firstID, child.TargetNode,
+		legacySpanFields(secondKind, secondStart, secondDur, edge.SpanAttributes, nil, nil))
 
 	return materializedChild{
 		Spans:        []model.Span{firstSpan, secondSpan},
@@ -398,17 +476,38 @@ func (g *Generator) materializePair(
 	}
 }
 
+type spanFields struct {
+	Kind              oteltrace.SpanKind
+	StatusCode        codes.Code
+	StatusDescription string
+	Start             time.Time
+	Duration          time.Duration
+	Attributes        map[string]attribute.Value
+	Events            []model.Event
+	Links             []model.Link
+}
+
+// Legacy expansion supplies its defaults before shared materialization.
+func legacySpanFields(kind oteltrace.SpanKind, start time.Time, duration time.Duration,
+	attrs map[string]attribute.Value, events []model.Event, links []model.Link,
+) spanFields {
+	if duration <= 0 {
+		duration = time.Millisecond
+	}
+	return spanFields{
+		Kind: kind, StatusCode: codes.Ok, Start: start, Duration: duration,
+		Attributes: attrs, Events: events, Links: links,
+	}
+}
+
+// newSpan materializes either topology's resolved fields without applying mode
+// defaults. Mutable containers belong to the output; attribute values are immutable.
 func (g *Generator) newSpan(
 	traceID oteltrace.TraceID,
 	spanID oteltrace.SpanID,
 	parentSpanID oteltrace.SpanID,
 	node Node,
-	kind oteltrace.SpanKind,
-	start time.Time,
-	duration time.Duration,
-	edgeAttrs map[string]attribute.Value,
-	events []model.Event,
-	links []model.Link,
+	fields spanFields,
 ) model.Span {
 	service := g.definition.Services[node.Service]
 	resourceAttrs := cloneAttributeValues(service.ResourceAttributes)
@@ -416,7 +515,7 @@ func (g *Generator) newSpan(
 	if serviceName, ok := resourceAttrs["service.name"]; ok {
 		attrs["service.name"] = serviceName
 	}
-	for key, value := range edgeAttrs {
+	for key, value := range fields.Attributes {
 		attrs[key] = value
 	}
 
@@ -424,26 +523,25 @@ func (g *Generator) newSpan(
 	if name == "" {
 		name = node.ID
 	}
-	if duration <= 0 {
-		duration = 1 * time.Millisecond
+	links := slices.Clone(fields.Links)
+	for i := range links {
+		links[i].Attributes = slices.Clone(links[i].Attributes)
 	}
-
-	end := start.Add(duration)
-	span := model.Span{
+	return model.Span{
 		TraceID:            traceID,
 		SpanID:             spanID,
 		ParentSpanID:       parentSpanID,
 		Name:               name,
-		Kind:               kind,
-		StartTime:          start,
-		EndTime:            end,
+		Kind:               fields.Kind,
+		StartTime:          fields.Start,
+		EndTime:            fields.Start.Add(fields.Duration),
 		Attributes:         attrs,
 		ResourceAttributes: resourceAttrs,
-		StatusCode:         codes.Ok,
-		Events:             eventsWithDefaultTime(events, start.Add(duration/2)),
+		StatusCode:         fields.StatusCode,
+		StatusDescription:  fields.StatusDescription,
+		Events:             eventsWithDefaultTime(fields.Events, fields.Start.Add(fields.Duration/2)),
 		Links:              links,
 	}
-	return span
 }
 
 func eventsWithDefaultTime(events []model.Event, defaultTime time.Time) []model.Event {
@@ -453,6 +551,7 @@ func eventsWithDefaultTime(events []model.Event, defaultTime time.Time) []model.
 	out := make([]model.Event, len(events))
 	copy(out, events)
 	for i := range out {
+		out[i].Attributes = slices.Clone(out[i].Attributes)
 		if out[i].Time.IsZero() {
 			out[i].Time = defaultTime
 		}
