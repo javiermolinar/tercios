@@ -66,16 +66,8 @@ type Definition struct {
 	Nodes    map[string]Node
 	Edges    []Edge
 
-	// Retain the construction mode so unsupported direct scenarios cannot
-	// accidentally enter call expansion, even when an optional root is set.
+	// Keep direct nodes out of call expansion, even with an optional root.
 	direct bool
-}
-
-func (d Definition) checkGenerationSupport() error {
-	if d.direct {
-		return fmt.Errorf("direct node generation is not implemented")
-	}
-	return nil
 }
 
 func (c Config) Build() (Definition, error) {

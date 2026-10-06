@@ -72,7 +72,7 @@ func directScenarioJSON(root string) string {
 		"edges":[{"from":"a","to":"b"}]}`
 }
 
-func TestGeneratorDirectBatchKeepsIntegrationGates(t *testing.T) {
+func TestGeneratorDirectBatch(t *testing.T) {
 	for _, root := range []string{"a", ""} {
 		t.Run("root="+root, func(t *testing.T) {
 			cfg, err := DecodeJSON(strings.NewReader(directScenarioJSON(root)))
@@ -97,14 +97,11 @@ func TestGeneratorDirectBatchKeepsIntegrationGates(t *testing.T) {
 				t.Fatalf("public direct batch native fields/timing differ: %+v", spans)
 			}
 			walker, err := g.NewStreamingWalker(time.Now())
-			if err == nil || err.Error() != "direct node generation is not implemented" || walker != nil {
+			if err == nil || !strings.Contains(err.Error(), "batch streaming exporter") || walker != nil {
 				t.Fatalf("expected unsupported-generation error and no walker, got walker=%v error=%v", walker, err)
 			}
 			if g.counter.Load() != 1 {
 				t.Fatal("rejected streaming generation consumed a trace sequence")
-			}
-			if multi, err := NewMultiGenerator([]Definition{testDefinition(t), definition}, SelectionStrategyRoundRobin, 1); err == nil || !strings.Contains(err.Error(), "direct node generation is not implemented") || multi != nil {
-				t.Fatalf("expected mixed-generator setup rejection, got generator=%v error=%v", multi, err)
 			}
 		})
 	}

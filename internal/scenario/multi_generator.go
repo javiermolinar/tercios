@@ -25,9 +25,6 @@ func NewMultiGenerator(definitions []Definition, strategy SelectionStrategy, see
 
 	generators := make([]BatchGenerator, 0, len(definitions))
 	for _, definition := range definitions {
-		if err := definition.checkGenerationSupport(); err != nil {
-			return nil, fmt.Errorf("scenario %q: %w", definition.Name, err)
-		}
 		generators = append(generators, NewGenerator(definition))
 	}
 

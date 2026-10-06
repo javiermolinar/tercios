@@ -30,10 +30,6 @@ func NewBatchGeneratorFromFilesWithRunSeed(paths []string, strategy SelectionStr
 			return nil, fmt.Errorf("invalid scenario definition in %q: %w", path, err)
 		}
 
-		if err := definition.checkGenerationSupport(); err != nil {
-			return nil, fmt.Errorf("scenario file %q: %w", path, err)
-		}
-
 		namespacedSeed := namespaceSeed(definition.Seed, runSalt, uint64(i+1))
 		definition.Seed = int64(namespacedSeed)
 		definitions = append(definitions, definition)
