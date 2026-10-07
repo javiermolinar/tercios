@@ -16,8 +16,9 @@ import (
 type DryRunOutput string
 
 const (
-	DryRunOutputSummary DryRunOutput = "summary"
-	DryRunOutputJSON    DryRunOutput = "json"
+	DryRunOutputSummary  DryRunOutput = "summary"
+	DryRunOutputJSON     DryRunOutput = "json"
+	DryRunOutputOTLPJSON DryRunOutput = "otlp-json"
 )
 
 func ParseDryRunOutput(value string) (DryRunOutput, error) {
@@ -26,8 +27,10 @@ func ParseDryRunOutput(value string) (DryRunOutput, error) {
 		return DryRunOutputSummary, nil
 	case string(DryRunOutputJSON):
 		return DryRunOutputJSON, nil
+	case string(DryRunOutputOTLPJSON):
+		return DryRunOutputOTLPJSON, nil
 	default:
-		return "", fmt.Errorf("unsupported output format %q (supported: summary, json)", value)
+		return "", fmt.Errorf("unsupported output format %q (supported: summary, json, otlp-json)", value)
 	}
 }
 
@@ -53,6 +56,8 @@ func (f DryRunExporterFactory) NewBatchExporter(_ context.Context) (model.BatchE
 	switch f.Output {
 	case DryRunOutputJSON:
 		return &jsonBatchExporter{writer: f.Writer, lock: f.lock}, nil
+	case DryRunOutputOTLPJSON:
+		return &otlpJSONBatchExporter{writer: f.Writer, lock: f.lock}, nil
 	case DryRunOutputSummary:
 		fallthrough
 	default:

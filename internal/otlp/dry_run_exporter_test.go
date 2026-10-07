@@ -24,6 +24,8 @@ func TestParseDryRunOutput(t *testing.T) {
 		{name: "default", input: "", want: DryRunOutputSummary},
 		{name: "summary", input: "summary", want: DryRunOutputSummary},
 		{name: "json", input: "json", want: DryRunOutputJSON},
+		{name: "otlp-json", input: "otlp-json", want: DryRunOutputOTLPJSON},
+		{name: "normalized otlp-json", input: " OTLP-JSON ", want: DryRunOutputOTLPJSON},
 		{name: "invalid", input: "xml", wantErr: true},
 	}
 
