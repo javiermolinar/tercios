@@ -66,8 +66,8 @@ func main() {
 	flag.Int64Var(&chaosSeed, "chaos-seed", 0, "override chaos policy seed (0 uses file/default)")
 	flag.BoolVar(&dryRun, "dry-run", false, "generate traces without exporting to OTLP")
 	flag.BoolVar(&streaming, "streaming", false, "pace each batch by span EndTime so backends see end_times <= wall-clock-now; required for long-running traces. See docs/streaming.md")
-	flag.StringVar(&output, "output", string(otlp.DryRunOutputSummary), "output format: summary or json")
-	flag.StringVar(&output, "o", string(otlp.DryRunOutputSummary), "output format shorthand: summary or json")
+	flag.StringVar(&output, "output", string(otlp.DryRunOutputSummary), "output format: summary, json, or otlp-json (JSON formats require --dry-run)")
+	flag.StringVar(&output, "o", string(otlp.DryRunOutputSummary), "output format shorthand: summary, json, or otlp-json")
 	flag.BoolVar(&summaryTraceIDs, "summary-trace-ids", false, "include sampled trace IDs in summary output")
 	flag.IntVar(&summaryTraceIDsLimit, "summary-trace-ids-limit", 10, "maximum number of sampled trace IDs to include in summary")
 	flag.Var(&headers, "header", "header in Key=Value or Key: Value format; repeatable")
@@ -230,7 +230,7 @@ func main() {
 	}
 	err = pipe.RunWithProgress(ctx, runner, factory, cfg.Requests.Interval.Duration, cfg.Requests.For.Duration, cfg.Requests.RampUp.Duration, pipelineExportTimeout, traceIDSampleLimit, progressInterval, os.Stderr)
 	summary := metrics.FormatSummary(pipe.Summary())
-	if dryRun && outputFormat == otlp.DryRunOutputJSON {
+	if dryRun && outputFormat != otlp.DryRunOutputSummary {
 		_, _ = fmt.Fprintln(os.Stderr, summary)
 	} else {
 		_, _ = fmt.Println(summary)
@@ -254,6 +254,9 @@ Examples:
 
   # See generated spans as JSON
   tercios --dry-run -o json 2>/dev/null
+
+  # Save an OTLP JSON request (summary goes to stderr)
+  tercios --dry-run -o otlp-json --exporters=1 --max-requests=1 > traces.json
 
   # Stress test a collector (50 workers, max speed, 60s)
   tercios --endpoint=localhost:4317 --exporters=50 --max-requests=0 --for=60 --request-interval=0

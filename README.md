@@ -80,6 +80,12 @@ If you want to see the generated spans as JSON:
 tercios --dry-run -o json 2>/dev/null
 ```
 
+To save OTLP JSON (one request per line, summary on stderr):
+
+```bash
+tercios --dry-run -o otlp-json > traces.json
+```
+
 If you want to send traces to a local OpenTelemetry Collector with environment variables instead of flags:
 
 ```bash
@@ -204,7 +210,7 @@ tercios --scenario-file=my-scenario.json \
 - `--chaos-policies-file` path to chaos policy JSON
 - `--chaos-seed` override policy seed (`0` uses config/default)
 - `--dry-run` do not export, generate locally
-- `-o, --output` `summary` or `json` (json requires `--dry-run`)
+- `-o, --output` `summary`, `json` (readable spans), or `otlp-json` (OTLP requests); both JSON formats require `--dry-run`
 - `--summary-trace-ids` include sampled trace IDs in summary output
 - `--summary-trace-ids-limit` maximum sampled trace IDs in summary output
 
