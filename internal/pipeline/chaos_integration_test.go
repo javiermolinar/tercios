@@ -2,29 +2,19 @@ package pipeline
 
 import (
 	"context"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/javiermolinar/tercios/internal/chaos"
 	"github.com/javiermolinar/tercios/internal/model"
+	"github.com/javiermolinar/tercios/internal/scenario"
 	"github.com/javiermolinar/tercios/internal/typedvalue"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	oteltrace "go.opentelemetry.io/otel/trace"
 )
-
-type fixedStage struct {
-	batch []model.Span
-}
-
-func (s fixedStage) name() string {
-	return "fixed"
-}
-
-func (s fixedStage) process(_ context.Context, _ []model.Span) ([]model.Span, error) {
-	return s.batch, nil
-}
 
 type capturedExporterFactory struct {
 	mu    sync.Mutex
@@ -83,28 +73,26 @@ func TestPipelineAppliesChaosPolicy(t *testing.T) {
 		t.Fatalf("NewEngine() error = %v", err)
 	}
 
-	start := time.Date(2026, time.January, 27, 12, 0, 0, 0, time.UTC)
-	input := []model.Span{{
-		Name:      "POST /posts",
-		Kind:      oteltrace.SpanKindServer,
-		StartTime: start,
-		EndTime:   start.Add(10 * time.Millisecond),
-		Attributes: map[string]attribute.Value{
-			"service.name":              attribute.StringValue("post-service"),
-			"http.route":                attribute.StringValue("/posts"),
-			"http.response.status_code": attribute.Int64Value(200),
-		},
-		ResourceAttributes: map[string]attribute.Value{
-			"service.name":    attribute.StringValue("post-service"),
-			"service.version": attribute.StringValue("2.10.0"),
-		},
-		StatusCode: codes.Ok,
-	}}
+	cfgScenario, err := scenario.DecodeJSON(strings.NewReader(`{"name":"chaos","seed":42,
+		"services":{"svc":{"resource":{"service.name":{"type":"string","value":"post-service"},"service.version":{"type":"string","value":"2.10.0"}}},"other":{}},
+		"nodes":{"a":{"service":"svc","span_name":"POST /posts","kind":"SERVER","duration_ms":10,"span_attributes":{"http.route":{"type":"string","value":"/posts"},"http.response.status_code":{"type":"int","value":200}}},
+		"b":{"service":"other","span_name":"untouched","parent":null}},"edges":[{"from":"a","to":"b"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition, err := cfgScenario.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := scenario.NewGenerator(definition).GenerateBatch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	runner := NewConcurrencyRunner(1, 1)
 	factory := &capturedExporterFactory{}
 	pipe := New(
-		fixedStage{batch: input},
+		NewScenarioStage(scenario.NewGenerator(definition)),
 		NewChaosStage(engine, chaos.NewSeededShouldApply(cfg.Seed)),
 	)
 
@@ -116,8 +104,20 @@ func TestPipelineAppliesChaosPolicy(t *testing.T) {
 	exported := append([]model.Span{}, factory.spans...)
 	factory.mu.Unlock()
 
-	if len(exported) == 0 {
-		t.Fatalf("expected exported spans, got none")
+	if len(exported) != 2 || pipe.Summary().Total != 1 || pipe.Summary().SuccessfulSpans != 2 || pipe.Summary().Failures != 0 {
+		t.Fatalf("export count/summary differs: %+v", pipe.Summary())
+	}
+	for i, got := range exported {
+		want := input[i]
+		want.StartTime, want.EndTime = got.StartTime, got.StartTime.Add(want.EndTime.Sub(want.StartTime))
+		if i == 0 {
+			want.Attributes["http.response.status_code"] = attribute.Int64Value(500)
+			want.StatusCode, want.StatusDescription = codes.Error, "simulated failure"
+			want.EndTime = want.EndTime.Add(120 * time.Millisecond)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("chaos changed unexpected fields or topology: got=%+v want=%+v", got, want)
+		}
 	}
 
 	span := exported[0]

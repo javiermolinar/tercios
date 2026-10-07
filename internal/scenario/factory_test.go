@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/javiermolinar/tercios/internal/model"
@@ -73,6 +74,64 @@ func TestNewBatchGeneratorFromFilesMultiple(t *testing.T) {
 	}
 	if a, b := rootSpanName(first), rootSpanName(second); a != "root-a" || b != "root-b" {
 		t.Fatalf("expected round robin root-a/root-b, got %q/%q", a, b)
+	}
+}
+
+func TestNewBatchGeneratorFromFilesDirectAndCallExpansion(t *testing.T) {
+	for _, root := range []string{"a", ""} {
+		dir := t.TempDir()
+		directPath, callPath := filepath.Join(dir, "direct.json"), filepath.Join(dir, "calls.json")
+		for path, document := range map[string]string{directPath: directScenarioJSON(root), callPath: minimalScenarioJSON("calls", 1, "root")} {
+			if err := os.WriteFile(path, []byte(document), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, strategy := range []SelectionStrategy{SelectionStrategyRoundRobin, SelectionStrategyRandom} {
+			for _, paths := range [][]string{{directPath}, {callPath, directPath}, {directPath, directPath}} {
+				first, err := NewBatchGeneratorFromFilesWithRunSeed(paths, strategy, 77)
+				if err != nil {
+					t.Fatal(err)
+				}
+				replay, err := NewBatchGeneratorFromFilesWithRunSeed(paths, strategy, 77)
+				if err != nil {
+					t.Fatal(err)
+				}
+				seen := map[string]bool{}
+				for i := 0; i < 16; i++ {
+					a, errA := first.GenerateBatch(context.Background())
+					b, errB := replay.GenerateBatch(context.Background())
+					if errA != nil || errB != nil || len(a) != 2 || len(b) != 2 || seen[a[0].TraceID.String()] {
+						t.Fatalf("root=%q strategy=%s request=%d: counts/uniqueness: %v / %v", root, strategy, i, errA, errB)
+					}
+					seen[a[0].TraceID.String()] = true
+					for j := range a {
+						if a[j].TraceID != b[j].TraceID || a[j].SpanID != b[j].SpanID || a[j].ParentSpanID != b[j].ParentSpanID || a[j].Name != b[j].Name || a[j].Kind != b[j].Kind {
+							t.Fatal("fixed run seed/selection is not reproducible")
+						}
+					}
+					if strategy == SelectionStrategyRoundRobin {
+						want := "a"
+						if paths[i%len(paths)] == callPath {
+							want = "root"
+						}
+						if rootSpanName(a) != want {
+							t.Fatalf("round-robin root=%q, want %q", rootSpanName(a), want)
+						}
+					}
+				}
+				changed, err := NewBatchGeneratorFromFilesWithRunSeed(paths, strategy, 78)
+				if err != nil {
+					t.Fatal(err)
+				}
+				batch, err := changed.GenerateBatch(context.Background())
+				if err != nil || seen[batch[0].TraceID.String()] {
+					t.Fatal("changed run seed did not change namespace")
+				}
+			}
+		}
+	}
+	if _, err := DecodeJSON(strings.NewReader(strings.Replace(directScenarioJSON(""), `"edges":[{"from":"a","to":"b"}]`, `"edges":[{"from":"a","to":"b"},{"from":"a","to":"b","kind":"internal","repeat":1,"duration_ms":1}]`, 1))); err == nil {
+		t.Fatal("mixed styles within one scenario accepted")
 	}
 }
 

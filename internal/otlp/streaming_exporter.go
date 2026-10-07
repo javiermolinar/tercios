@@ -2,6 +2,7 @@ package otlp
 
 import (
 	"context"
+	"slices"
 	"sort"
 	"time"
 
@@ -29,6 +30,9 @@ func (e *streamingBatchExporter) ExportBatch(ctx context.Context, batch model.Ba
 	if len(batch) == 0 {
 		return nil
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	sorted := make(model.Batch, len(batch))
 	copy(sorted, batch)
@@ -51,6 +55,12 @@ func (e *streamingBatchExporter) ExportBatch(ctx context.Context, batch model.Ba
 		for i := range sorted {
 			sorted[i].StartTime = sorted[i].StartTime.Add(shift)
 			sorted[i].EndTime = sorted[i].EndTime.Add(shift)
+			sorted[i].Events = slices.Clone(sorted[i].Events)
+			for j := range sorted[i].Events {
+				if !sorted[i].Events[j].Time.IsZero() {
+					sorted[i].Events[j].Time = sorted[i].Events[j].Time.Add(shift)
+				}
+			}
 		}
 	}
 
@@ -59,6 +69,9 @@ func (e *streamingBatchExporter) ExportBatch(ctx context.Context, batch model.Ba
 	})
 
 	for start := 0; start < len(sorted); {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		end := start + 1
 		for end < len(sorted) && sorted[end].EndTime.Equal(sorted[start].EndTime) {
 			end++

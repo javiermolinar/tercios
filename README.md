@@ -38,6 +38,7 @@ Tercios generates OTLP traces and sends them at configurable concurrency and rat
    - A built-in default scenario (5-service web app) is used out of the box — no config needed.
    - Use `--scenario-file` for custom topology definitions (repeatable).
    - Deterministic traces with namespaced trace/span IDs per process.
+   - Kind-free connections construct exact spans and forests; edge kinds retain call expansion.
 
 2. **Chaos (optional mutations)**
    - Enabled with `--chaos-policies-file`.
@@ -53,7 +54,7 @@ In short: **scenario source → optional chaos → export (eager or streaming) a
 
 ## Documentation
 
-- [Scenarios](docs/scenarios.md) — deterministic topology configs
+- [Scenarios](docs/scenarios.md) — exact spans, forests and call expansion
 - [Chaos](docs/chaos.md) — trace mutation policies
 - [TLS](docs/tls.md) — secure endpoints, CA certs, mTLS
 - [Typed Values](docs/typed-values.md) — attribute value types, arrays, generated strings

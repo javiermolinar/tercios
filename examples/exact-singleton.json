@@ -1,0 +1,6 @@
+{
+  "name": "singleton",
+  "services": {"app": {"resource": {"service.name": {"type": "string", "value": "app"}}}},
+  "nodes": {"only": {"service": "app"}},
+  "edges": [{"from": "only"}]
+}

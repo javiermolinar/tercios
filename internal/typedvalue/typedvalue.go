@@ -1,8 +1,13 @@
 package typedvalue
 
 import (
+	"bytes"
 	_ "embed"
+	"encoding/json"
 	"fmt"
+	"io"
+	"math"
+	"strconv"
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -31,6 +36,27 @@ type TypedValue struct {
 	Type  ValueType `json:"type"`
 	Value any       `json:"value"`
 	Size  *int      `json:"size,omitempty"`
+}
+
+// Preserve number tokens at the leaf, including when callers use nested custom
+// decoders. Using UseNumber only on an outer decoder would not reach those.
+func (v *TypedValue) UnmarshalJSON(data []byte) error {
+	type plain TypedValue
+	var decoded plain
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("unexpected trailing JSON")
+		}
+		return err
+	}
+	*v = TypedValue(decoded)
+	return nil
 }
 
 func (v TypedValue) Validate(field string) error {
@@ -296,6 +322,8 @@ func generateBlob(seed string, size int) string {
 
 func ToInt64(value any) (int64, bool) {
 	switch v := value.(type) {
+	case json.Number:
+		return parseJSONInt64(v)
 	case int:
 		return int64(v), true
 	case int8:
@@ -307,7 +335,7 @@ func ToInt64(value any) (int64, bool) {
 	case int64:
 		return v, true
 	case uint:
-		return int64(v), true
+		return int64(v), uint64(v) <= math.MaxInt64
 	case uint8:
 		return int64(v), true
 	case uint16:
@@ -315,20 +343,72 @@ func ToInt64(value any) (int64, bool) {
 	case uint32:
 		return int64(v), true
 	case uint64:
-		return int64(v), true
+		return int64(v), v <= math.MaxInt64
 	case float64:
-		i := int64(v)
-		return i, float64(i) == v
+		// The upper bound is exclusive: float64(MaxInt64) rounds to 2^63.
+		if v < -0x1p63 || v >= 0x1p63 || math.Trunc(v) != v {
+			return 0, false
+		}
+		return int64(v), true
 	case float32:
-		i := int64(v)
-		return i, float32(i) == v
+		return ToInt64(float64(v))
 	default:
 		return 0, false
 	}
 }
 
+// Accept decimal and scientific notation only when the exact value is an
+// INT64. Strip decimal zeros and check the scale before expanding anything,
+// so even enormous exponents cannot cause rounding or unbounded allocation.
+func parseJSONInt64(number json.Number) (int64, bool) {
+	token := number.String()
+	if !json.Valid([]byte(token)) {
+		return 0, false
+	}
+	if value, err := number.Int64(); err == nil {
+		return value, true
+	}
+	negative := strings.HasPrefix(token, "-")
+	token = strings.TrimPrefix(token, "-")
+	mantissa, exponentText, _ := strings.Cut(strings.ToLower(token), "e")
+	whole, fraction, _ := strings.Cut(mantissa, ".")
+	coefficient := whole + fraction
+	digits := strings.TrimRight(coefficient, "0")
+	trailingZeros := len(coefficient) - len(digits)
+	digits = strings.TrimLeft(digits, "0")
+	if digits == "" {
+		return 0, true
+	}
+	if len(digits) > 19 {
+		return 0, false
+	}
+	var exponent int64
+	if exponentText != "" {
+		var err error
+		exponent, err = strconv.ParseInt(exponentText, 10, 64)
+		if err != nil {
+			return 0, false
+		}
+	}
+	decimalPlaces := int64(len(fraction)) - int64(trailingZeros)
+	// Unsigned subtraction avoids overflow when a parsed exponent is MaxInt64.
+	zeros := uint64(exponent) - uint64(decimalPlaces)
+	if exponent < decimalPlaces || zeros > uint64(19-len(digits)) {
+		return 0, false
+	}
+	digits += strings.Repeat("0", int(zeros))
+	if negative {
+		digits = "-" + digits
+	}
+	value, err := strconv.ParseInt(digits, 10, 64)
+	return value, err == nil
+}
+
 func ToFloat64(value any) (float64, bool) {
 	switch v := value.(type) {
+	case json.Number:
+		f, err := v.Float64()
+		return f, err == nil
 	case float64:
 		return v, true
 	case float32:

@@ -41,8 +41,21 @@ type ServiceConfig struct {
 }
 
 type NodeConfig struct {
-	Service  string `json:"service"`
-	SpanName string `json:"span_name"`
+	Service        string                `json:"service"`
+	SpanName       string                `json:"span_name"`
+	Kind           *string               `json:"kind,omitempty"`
+	Parent         json.RawMessage       `json:"parent,omitempty"`
+	Status         *NodeStatusConfig     `json:"status,omitempty"`
+	StartOffsetMs  *int64                `json:"start_offset_ms,omitempty"`
+	DurationMs     *int64                `json:"duration_ms,omitempty"`
+	SpanAttributes map[string]TypedValue `json:"span_attributes,omitempty"`
+	SpanEvents     []EventConfig         `json:"span_events,omitempty"`
+	SpanLinks      []LinkConfig          `json:"span_links,omitempty"`
+}
+
+type NodeStatusConfig struct {
+	Code        *string `json:"code,omitempty"`
+	Description *string `json:"description,omitempty"`
 }
 
 type EventConfig struct {
@@ -57,13 +70,15 @@ type LinkConfig struct {
 
 type EdgeConfig struct {
 	From string   `json:"from"`
-	To   string   `json:"to"`
-	Kind EdgeKind `json:"kind"`
+	To   string   `json:"to,omitempty"`
+	Kind EdgeKind `json:"kind,omitempty"`
+
+	fields map[string]json.RawMessage
 	// Repeat: how many times this edge fires sequentially.
-	Repeat int `json:"repeat"`
+	Repeat int `json:"repeat,omitempty"`
 	// DurationMs: the edge's own work time. Full span duration is
 	// DurationMs + subtreeDuration[To] so the span contains its subtree.
-	DurationMs int64 `json:"duration_ms"`
+	DurationMs int64 `json:"duration_ms,omitempty"`
 	// NetworkLatencyMs: symmetric one-way network gap. The target-side
 	// span of a pair edge is inset by this amount on both sides of the
 	// source-side span. Must be 0 for Internal edges. Requires
@@ -79,8 +94,10 @@ type Config struct {
 	Seed     int64                    `json:"seed"`
 	Services map[string]ServiceConfig `json:"services"`
 	Nodes    map[string]NodeConfig    `json:"nodes"`
-	Root     string                   `json:"root"`
+	Root     string                   `json:"root,omitempty"`
 	Edges    []EdgeConfig             `json:"edges"`
+
+	rootPresent bool
 }
 
 func LoadFromJSON(path string) (Config, error) {
@@ -109,14 +126,12 @@ func DecodeJSON(r io.Reader) (Config, error) {
 }
 
 func (c Config) Validate() error {
-	if strings.TrimSpace(c.Name) == "" {
-		return fmt.Errorf("name is required")
+	if c.hasDirectNodes() {
+		_, err := c.compileDirectNodes()
+		return err
 	}
-	if len(c.Services) == 0 {
-		return fmt.Errorf("services are required")
-	}
-	if len(c.Nodes) == 0 {
-		return fmt.Errorf("nodes are required")
+	if err := c.validateHeader(); err != nil {
+		return err
 	}
 	if strings.TrimSpace(c.Root) == "" {
 		return fmt.Errorf("root is required")
@@ -128,26 +143,13 @@ func (c Config) Validate() error {
 		return fmt.Errorf("edges are required")
 	}
 
-	for serviceID, service := range c.Services {
-		if strings.TrimSpace(serviceID) == "" {
-			return fmt.Errorf("service id cannot be empty")
-		}
-		for key, value := range service.Resource {
-			if err := value.Validate(fmt.Sprintf("service %s resource %q", serviceID, key)); err != nil {
-				return err
-			}
-		}
+	if err := c.validateNodes(); err != nil {
+		return err
 	}
 
-	for nodeID, node := range c.Nodes {
-		if strings.TrimSpace(nodeID) == "" {
-			return fmt.Errorf("node id cannot be empty")
-		}
-		if strings.TrimSpace(node.Service) == "" {
-			return fmt.Errorf("node %s: service is required", nodeID)
-		}
-		if _, ok := c.Services[node.Service]; !ok {
-			return fmt.Errorf("node %s: unknown service %q", nodeID, node.Service)
+	for id, node := range c.Nodes {
+		if node.hasDirectFields() {
+			return fmt.Errorf("node %q: native span fields require edges without kind", id)
 		}
 	}
 
@@ -223,6 +225,47 @@ func (c Config) Validate() error {
 	if err := validateTimings(c.Edges, computeConfigSubtreeDurations(c.Root, outgoing)); err != nil {
 		return err
 	}
+	return nil
+}
+
+// Shared by call expansion and direct span construction.
+func (c Config) validateHeader() error {
+	if strings.TrimSpace(c.Name) == "" {
+		return fmt.Errorf("name is required")
+	}
+	if len(c.Services) == 0 {
+		return fmt.Errorf("services are required")
+	}
+	if len(c.Nodes) == 0 {
+		return fmt.Errorf("nodes are required")
+	}
+	return nil
+}
+
+func (c Config) validateNodes() error {
+	for serviceID, service := range c.Services {
+		if strings.TrimSpace(serviceID) == "" {
+			return fmt.Errorf("service id cannot be empty")
+		}
+		for key, value := range service.Resource {
+			if err := value.Validate(fmt.Sprintf("service %s resource %q", serviceID, key)); err != nil {
+				return err
+			}
+		}
+	}
+
+	for nodeID, node := range c.Nodes {
+		if strings.TrimSpace(nodeID) == "" {
+			return fmt.Errorf("node id cannot be empty")
+		}
+		if strings.TrimSpace(node.Service) == "" {
+			return fmt.Errorf("node %s: service is required", nodeID)
+		}
+		if _, ok := c.Services[node.Service]; !ok {
+			return fmt.Errorf("node %s: unknown service %q", nodeID, node.Service)
+		}
+	}
+
 	return nil
 }
 
@@ -360,4 +403,84 @@ func validateTimings(edges []EdgeConfig, subtreeDuration map[string]int64) error
 		)
 	}
 	return nil
+}
+
+func validateDirectEdge(edge EdgeConfig, index int) error {
+	context := fmt.Sprintf("edge %d", index)
+	if edge.hasKind() {
+		return fmt.Errorf("%s: cannot mix entries with kind and entries without kind", context)
+	}
+	for _, field := range []string{"from", "to", "repeat", "network_latency_ms"} {
+		if isJSONNull(edge.fields[field]) {
+			return fmt.Errorf("%s: %s cannot be null", context, field)
+		}
+	}
+	if edge.To == "" && edge.hasField("to") {
+		return fmt.Errorf("%s: to must be nonempty when supplied", context)
+	}
+	if edge.Repeat != 0 && edge.Repeat != 1 || edge.hasField("repeat") && edge.Repeat != 1 {
+		return fmt.Errorf("%s: repeat must be 1 when supplied without kind", context)
+	}
+	if edge.NetworkLatencyMs != 0 {
+		return fmt.Errorf("%s: network_latency_ms must be 0 without kind", context)
+	}
+	for _, field := range []struct {
+		name string
+		set  bool
+	}{
+		{"duration_ms", edge.DurationMs != 0},
+		{"span_attributes", edge.SpanAttributes != nil},
+		{"span_events", edge.SpanEvents != nil},
+		{"span_links", edge.SpanLinks != nil},
+	} {
+		if field.set || edge.hasField(field.name) {
+			return fmt.Errorf("%s: %s belongs on the node without kind", context, field.name)
+		}
+	}
+	return nil
+}
+
+func validateNodeForest(spans map[string]Node) error {
+	ids := sortedKeys(spans)
+	for _, id := range ids {
+		span := spans[id]
+		if span.Parent != "" {
+			if span.Parent == id {
+				return fmt.Errorf("node %q parent: self-parenting is invalid", id)
+			}
+			if _, ok := spans[span.Parent]; !ok {
+				return fmt.Errorf("node %q parent: unknown node %q", id, span.Parent)
+			}
+		}
+		for i, link := range span.SpanLinks {
+			if _, ok := spans[link.Node]; !ok {
+				return fmt.Errorf("node %q span_links %d: unknown node %q", id, i, link.Node)
+			}
+		}
+	}
+	// Iterative coloring avoids recursive stack growth for deep input forests.
+	state := make(map[string]uint8, len(spans))
+	for _, id := range ids {
+		var path []string
+		for current := id; current != "" && state[current] != 2; current = spans[current].Parent {
+			if state[current] == 1 {
+				return fmt.Errorf("node %q parent: cycle detected", current)
+			}
+			state[current] = 1
+			path = append(path, current)
+		}
+		for _, visited := range path {
+			state[visited] = 2
+		}
+	}
+	return nil
+}
+
+func sortedKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }

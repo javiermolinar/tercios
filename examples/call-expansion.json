@@ -1,0 +1,11 @@
+{
+  "name": "simple",
+  "seed": 1,
+  "services": {"svc": {"resource": {"service.name": {"type": "string", "value": "my-service"}}}},
+  "nodes": {
+    "root": {"service": "svc", "span_name": "handle-request"},
+    "db": {"service": "svc", "span_name": "query-db"}
+  },
+  "root": "root",
+  "edges": [{"from": "root", "to": "db", "kind": "client_database", "repeat": 1, "duration_ms": 25}]
+}

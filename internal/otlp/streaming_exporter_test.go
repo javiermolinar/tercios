@@ -3,11 +3,15 @@ package otlp
 import (
 	"context"
 	"errors"
+	"reflect"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/javiermolinar/tercios/internal/model"
+	"github.com/javiermolinar/tercios/internal/scenario"
 	oteltrace "go.opentelemetry.io/otel/trace"
 )
 
@@ -57,6 +61,69 @@ func makeSpan(name string, endOffset time.Duration, base time.Time) model.Span {
 		Name:      name,
 		StartTime: base,
 		EndTime:   base.Add(endOffset),
+	}
+}
+
+func TestStreamingBatchExporterExactForest(t *testing.T) {
+	cfg, err := scenario.DecodeJSON(strings.NewReader(`{"name":"streaming","services":{"svc":{}},
+		"nodes":{"a":{"service":"svc","duration_ms":6,"span_events":[{"name":"midpoint"}],"span_links":[{"node":"z"}]},
+		"b":{"service":"svc","start_offset_ms":2,"duration_ms":0},"c":{"service":"svc","parent":null,"duration_ms":2},"z":{"service":"svc","duration_ms":2}},
+		"edges":[{"from":"a","to":"b"},{"from":"c"},{"from":"z"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := cfg.Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	batch, err := scenario.NewGenerator(d).GenerateBatch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := map[string]model.Span{}
+	for i := range batch {
+		batch[i].StartTime, batch[i].EndTime = batch[i].StartTime.Add(-time.Hour), batch[i].EndTime.Add(-time.Hour)
+		for j := range batch[i].Events {
+			batch[i].Events[j].Time = batch[i].Events[j].Time.Add(-time.Hour)
+		}
+		before[batch[i].Name] = batch[i]
+		original := before[batch[i].Name]
+		original.Events = slices.Clone(original.Events)
+		before[batch[i].Name] = original
+	}
+	inner := &fakeBatchExporter{}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := NewStreamingBatchExporter(inner).ExportBatch(ctx, batch); err != nil {
+		t.Fatal(err)
+	}
+	emits := inner.snapshot()
+	if len(emits) != 2 || len(emits[0].spans) != 3 || len(emits[1].spans) != 1 {
+		t.Fatal("forest EndTime groups differ")
+	}
+	shift := emits[1].spans[0].StartTime.Sub(before["a"].StartTime)
+	names := []string{}
+	for _, emit := range emits {
+		for _, got := range emit.spans {
+			want := before[got.Name]
+			want.StartTime, want.EndTime = want.StartTime.Add(shift), want.EndTime.Add(shift)
+			want.Events = slices.Clone(want.Events)
+			for i := range want.Events {
+				want.Events[i].Time = want.Events[i].Time.Add(shift)
+			}
+			if got.EndTime.After(emit.at) || !reflect.DeepEqual(got, want) {
+				t.Fatal("rebasing changed native fields, offsets or topology")
+			}
+			names = append(names, got.Name)
+		}
+	}
+	if !reflect.DeepEqual(names, []string{"b", "c", "z", "a"}) {
+		t.Fatalf("EndTime order=%v", names)
+	}
+	for _, span := range batch {
+		if !reflect.DeepEqual(span, before[span.Name]) {
+			t.Fatal("rebasing mutated the input")
+		}
 	}
 }
 
@@ -215,6 +282,9 @@ func TestStreamingBatchExporterCancellationReturnsCtxErr(t *testing.T) {
 	}
 	if got := len(inner.snapshot()); got != 0 {
 		t.Fatalf("expected inner to receive no emits, got %d", got)
+	}
+	if err := exp.ExportBatch(ctx, model.Batch{makeSpan("zero", 0, base)}); !errors.Is(err, context.Canceled) || len(inner.snapshot()) != 0 {
+		t.Fatal("cancelled zero-duration batch was exported")
 	}
 }
 
