@@ -3,7 +3,7 @@
 All notable changes are recorded here. Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 version numbers follow [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [v0.8.0] — 2026-10-07
 
 ### Added
 
@@ -17,6 +17,13 @@ version numbers follow [Semantic Versioning](https://semver.org/).
 - Exact and call-expansion file selection through the existing CLI, deterministic seed
   namespaces, chaos, dry-run JSON/summary and gRPC/HTTP OTLP conversion.
 - Exact and call-expansion example scenarios.
+- `--dry-run -o otlp-json` emits one OTLP JSON request per line using Collector
+  `pdata`, with the summary on stderr. Existing `-o json` output is unchanged.
+
+### Fixed
+
+- Preserve integer attribute precision when decoding scenario JSON, including
+  values larger than 2^53.
 
 ### Changed
 
